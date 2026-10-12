@@ -1,0 +1,123 @@
+name: Build and Deploy Voice AI to AWS ECR & ECS
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+permissions:
+  id-token: write   # Required for AWS OIDC authentication
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY_BACKEND: voice-ai-backend
+  ECR_REPOSITORY_FRONTEND: voice-ai-frontend
+  ECR_REPOSITORY_FREESWITCH: voice-ai-freeswitch
+  ECS_CLUSTER: voice-ai-production-cluster
+  ECS_SERVICE_BACKEND: voice-ai-backend-service
+  ECS_SERVICE_FRONTEND: voice-ai-frontend-service
+  ECS_SERVICE_FREESWITCH: voice-ai-freeswitch-service
+
+jobs:
+  build-and-push:
+    name: Build & Push Images to Amazon ECR
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials (OIDC - Secure No Hardcoded Keys)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # ------------------------------------------------------------------------
+      # 1. Build and Push Backend Container (FastAPI, WebRTC, Pipecat)
+      # ------------------------------------------------------------------------
+      - name: Build & Push Backend Container
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          tags: |
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY_BACKEND }}:${{ github.sha }}
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY_BACKEND }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # ------------------------------------------------------------------------
+      # 2. Build and Push Frontend Container (React, Vite, Nginx)
+      # ------------------------------------------------------------------------
+      - name: Build & Push Frontend Container
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          file: ./frontend/Dockerfile
+          push: true
+          tags: |
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY_FRONTEND }}:${{ github.sha }}
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY_FRONTEND }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # ------------------------------------------------------------------------
+      # 3. Build and Push FreeSWITCH Container
+      # ------------------------------------------------------------------------
+      - name: Build & Push FreeSWITCH Container
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile.freeswitch
+          push: true
+          tags: |
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY_FREESWITCH }}:${{ github.sha }}
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY_FREESWITCH }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy-ecs:
+    name: Deploy to Amazon ECS
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Update ECS Backend Service (Fargate)
+        run: |
+          aws ecs update-service \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --service ${{ env.ECS_SERVICE_BACKEND }} \
+            --force-new-deployment
+
+      - name: Update ECS Frontend Service (Fargate)
+        run: |
+          aws ecs update-service \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --service ${{ env.ECS_SERVICE_FRONTEND }} \
+            --force-new-deployment
+
+      - name: Update ECS FreeSWITCH Service (EC2 Host Networking)
+        run: |
+          aws ecs update-service \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --service ${{ env.ECS_SERVICE_FREESWITCH }} \
+            --force-new-deployment
