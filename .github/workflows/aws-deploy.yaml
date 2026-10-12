@@ -4,6 +4,16 @@ on:
   push:
     branches:
       - main
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - '.vscode/**'
+      - '.gitignore'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   id-token: write
@@ -18,13 +28,35 @@ env:
 
 jobs:
   deploy:
+    name: Build, Push & Deploy to Amazon ECS
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Configure AWS credentials
+      - name: Validate IAM Role ARN Format
+        shell: bash
+        env:
+          ROLE_ARN: ${{ secrets.AWS_GITHUB_ACTIONS_ROLE_ARN }}
+        run: |
+          if [ -z "$ROLE_ARN" ]; then
+            echo "::error::Secret AWS_GITHUB_ACTIONS_ROLE_ARN is missing or empty."
+            echo "Please set AWS_GITHUB_ACTIONS_ROLE_ARN in GitHub Repository Secrets."
+            exit 1
+          fi
+
+          if [[ ! "$ROLE_ARN" =~ ^arn:aws:iam::[0-9]{12}:role/[A-Za-z0-9_+=,.@-]+$ ]]; then
+            echo "::error::AWS_GITHUB_ACTIONS_ROLE_ARN is not a valid IAM role ARN."
+            echo "Expected format: arn:aws:iam::<12-digit-account-id>:role/<role-name>"
+            echo "Check that you did not provide only the role name or introduce accidental whitespace/quotes."
+            exit 1
+          fi
+
+          echo "AWS IAM role ARN format validation passed."
+
+      - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_GITHUB_ACTIONS_ROLE_ARN }}
@@ -32,8 +64,22 @@ jobs:
           role-session-name: GitHubActionsVoiceAI
 
       - name: Verify AWS identity
+        id: verify-identity
+        shell: bash
         run: |
-          aws sts get-caller-identity
+          echo "Verifying AWS STS caller identity..."
+          CALLER_IDENTITY=$(aws sts get-caller-identity --output json) || {
+            echo "::error::Failed to retrieve AWS caller identity."
+            exit 1
+          }
+
+          ACCOUNT_ID=$(echo "$CALLER_IDENTITY" | jq -r '.Account')
+          CALLER_ARN=$(echo "$CALLER_IDENTITY" | jq -r '.Arn')
+
+          echo "Successfully authenticated via OIDC."
+          echo "AWS Account ID : $ACCOUNT_ID"
+          echo "Caller ARN     : $CALLER_ARN"
+          echo "account_id=$ACCOUNT_ID" >> "$GITHUB_OUTPUT"
 
       - name: Login to Amazon ECR
         id: login-ecr
@@ -42,16 +88,8 @@ jobs:
       - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Generate Docker metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}
-          tags:
-            type=raw,value=latest
-            type=sha,prefix=
-
       - name: Build and push All-in-One Docker image
+        id: build-image
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -60,22 +98,27 @@ jobs:
           push: true
           provenance: false
           tags: |
-            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
             ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=all-in-one
-          cache-to: type=gha,mode=max,scope=all-in-one
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
+          cache-from: type=gha,scope=voice-ai-poc
+          cache-to: type=gha,mode=max,scope=voice-ai-poc
+
+      - name: Confirm Image URI
+        run: |
+          echo "Image successfully pushed to ECR:"
+          echo "${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}"
 
       - name: Download ECS task definition
         id: download-task-def
         continue-on-error: true
         run: |
+          echo "Attempting to retrieve active task definition for service: ${{ env.ECS_SERVICE }}..."
           aws ecs describe-task-definition \
-            --task-definition "$ECS_SERVICE" \
+            --task-definition "${{ env.ECS_SERVICE }}" \
             --query taskDefinition \
             > task-definition.json
 
-      - name: Render task definition with new image
+      - name: Render task definition with new image tag
         id: task-def
         if: steps.download-task-def.outcome == 'success'
         uses: aws-actions/amazon-ecs-render-task-definition@v1
@@ -91,22 +134,40 @@ jobs:
           task-definition: ${{ steps.task-def.outputs.task-definition }}
           service: ${{ env.ECS_SERVICE }}
           cluster: ${{ env.ECS_CLUSTER }}
-          wait-for-service-stability: false
+          wait-for-service-stability: true
 
       - name: Fallback ECS Service Redeployment
         if: steps.download-task-def.outcome != 'success'
         run: |
           echo "Task definition render not available; triggering forced service redeployment..."
           aws ecs update-service \
-            --cluster ${{ env.ECS_CLUSTER }} \
-            --service ${{ env.ECS_SERVICE }} \
+            --cluster "${{ env.ECS_CLUSTER }}" \
+            --service "${{ env.ECS_SERVICE }}" \
             --force-new-deployment
 
-      - name: Deployment status
+          echo "Waiting for ECS service stability..."
+          aws ecs wait services-stable \
+            --cluster "${{ env.ECS_CLUSTER }}" \
+            --services "${{ env.ECS_SERVICE }}"
+
+      - name: Deployment summary
+        if: always()
         run: |
-          echo "======================================"
-          echo "Deployment triggered successfully"
-          echo "Cluster : $ECS_CLUSTER"
-          echo "Service : $ECS_SERVICE"
-          echo "Image   : $ECR_REPOSITORY:${GITHUB_SHA}"
-          echo "======================================"
+          echo "=========================================================="
+          echo "Deployment Execution Summary"
+          echo "=========================================================="
+          echo "Region    : ${{ env.AWS_REGION }}"
+          echo "Cluster   : ${{ env.ECS_CLUSTER }}"
+          echo "Service   : ${{ env.ECS_SERVICE }}"
+          echo "Container : ${{ env.CONTAINER_NAME }}"
+          echo "Image     : ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}"
+          echo "=========================================================="
+
+          if aws sts get-caller-identity >/dev/null 2>&1; then
+            echo "Latest ECS Service Deployments:"
+            aws ecs describe-services \
+              --cluster "${{ env.ECS_CLUSTER }}" \
+              --services "${{ env.ECS_SERVICE }}" \
+              --query "services[0].deployments[*].{Status:status,Desired:desiredCount,Running:runningCount,Pending:pendingCount,TaskDef:taskDefinition}" \
+              --output table || true
+          fi
