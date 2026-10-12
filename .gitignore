@@ -48,3 +48,6 @@ build/
 dist/
 *.egg-info/
 *.egg
+
+backend\data
+data/

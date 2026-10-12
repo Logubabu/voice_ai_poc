@@ -1,5 +1,5 @@
 import time
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List
 from app.utils.logging import logger
 from app.services.audio_processor import audio_processor_factory
 

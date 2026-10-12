@@ -1,0 +1,20 @@
+[
+  {
+    "id": "eval_001",
+    "question": "What is the refund policy?",
+    "expected_document": "refund_policy.pdf",
+    "expected_keywords": ["30 days", "full refund", "proof of purchase"]
+  },
+  {
+    "id": "eval_002",
+    "question": "How do I cancel my subscription?",
+    "expected_document": "cancellation_guide.docx",
+    "expected_keywords": ["account settings", "billing tab", "cancel subscription"]
+  },
+  {
+    "id": "eval_003",
+    "question": "What are your customer support working hours?",
+    "expected_document": "support_faq.txt",
+    "expected_keywords": ["9 AM", "6 PM", "Monday to Friday"]
+  }
+]

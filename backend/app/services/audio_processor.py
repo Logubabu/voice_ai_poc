@@ -1,9 +1,10 @@
 import time
 import math
 import struct
-from typing import Dict, Any, Optional
-from pipecat.frames.frames import Frame, InputAudioRawFrame
+from typing import Dict, Any
+from pipecat.frames.frames import Frame, InputAudioRawFrame, UserAudioRawFrame
 from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
+from app.config import config
 from app.utils.logging import logger
 
 
@@ -205,7 +206,8 @@ class AudioProcessorFactory:
     }
 
     def __init__(self):
-        self._active_filter: BaseAudioFilter = PassthroughFilter()
+        default_filter_name = getattr(config, "AUDIO_PROCESSOR", "RNNoise")
+        self._active_filter: BaseAudioFilter = self.create_processor(default_filter_name)
         self._audio_logger = AudioLoopLogger()
         logger.info(f"[AUDIO-FACTORY] Initialized AudioProcessorFactory with default filter: '{self._active_filter.display_name}'")
 
@@ -301,7 +303,7 @@ class NoiseCancellationFrameProcessor(FrameProcessor):
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
 
-        if isinstance(frame, InputAudioRawFrame):
+        if isinstance(frame, (InputAudioRawFrame, UserAudioRawFrame)):
             # Send status update if filter changed
             self._notify_client_filter_change()
 

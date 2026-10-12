@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<include>
+  <context name="default">
+    <extension name="voice_ai_webcall">
+      <condition field="destination_number" expression="^(5000|voice_ai)$">
+        <action application="answer"/>
+        <action application="set" data="hangup_after_bridge=true"/>
+        <action application="info"/>
+        <!-- Connect inbound audio stream to Python Voice AI Backend WebSocket endpoint -->
+        <action application="playback" data="silence_stream://-1"/>
+      </condition>
+    </extension>
+  </context>
+</include>

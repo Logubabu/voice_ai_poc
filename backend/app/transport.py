@@ -1,4 +1,3 @@
-from typing import Any
 from pipecat.transports.smallwebrtc.connection import SmallWebRTCConnection
 from pipecat.transports.smallwebrtc.transport import SmallWebRTCTransport
 from pipecat.transports.base_transport import TransportParams

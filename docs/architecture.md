@@ -1,58 +1,23 @@
-# Architecture Documentation — Voice AI WebCall POC
+# Sharyx Voice AI Architecture Specification
 
-## 1. High-Level Architecture
+## Overview
 
-```text
-React Browser Interface
-       │
-       │ WebRTC / REST
-       ▼
-Pipecat WebRTC Transport (Python FastAPI)
-       │
-       ▼
-VAD / Turn Detection (Silero VAD)
-       │
-       ▼
-STT Service Adapter (Sarvam AI / Groq / OpenAI / Deepgram)
-       │
-       ▼
-LLM Service Adapter (Google Gemini / Groq / OpenAI)
-       │
-       ▼
-TTS Service Adapter (ElevenLabs / Groq / OpenAI / Cartesia)
-       │
-       ▼
-Pipecat WebRTC Transport
-       │
-       │ WebRTC Audio Output
-       ▼
-Browser Speakers
+The Sharyx Voice AI system supports two selectable voice transport modes while sharing a single, unified AI pipeline:
+
+### Mode A: WebCall (Browser WebRTC)
+```
+Browser → WebRTC → WebRTCVoiceTransport → NoiseCancellationManager → STT → LLM + Tool Calling → TTS → WebRTC → Browser
 ```
 
-## 2. Component Design
+### Mode B: Phone Call (FreeSWITCH SIP/PSTN)
+```
+PSTN/SIP → FreeSWITCH → WebSocket Audio Stream → FreeSWITCHVoiceTransport → Resampler (8k↔16k) → NoiseCancellationManager → STT → LLM + Tool Calling → TTS → WebSocket → FreeSWITCH → PSTN/SIP
+```
 
-### Frontend (React + Vite + TypeScript)
-- **CallControls (`CallControls.tsx`)**: Manages call initiation (Start Call) and session termination (End Call).
-- **CallStatus (`CallStatus.tsx`)**: Displays active state machine states (`Idle`, `Connecting...`, `Connected`, `Listening...`, `AI Speaking...`, `Ending...`, `Disconnected`, `Error`) and microphone status.
-- **Transcript (`Transcript.tsx`)**: Renders real-time conversation messages.
-- **Voice Service (`voice.ts`)**: Handles media permissions, API backend communication, and WebRTC session management.
+## Key Components
 
-### Backend (Python + Pipecat + FastAPI)
-- **Main (`app/main.py`)**: FastAPI web server exposing `/api/start`, `/api/stop`, `/api/status`, and `/health`.
-- **Config (`app/config.py`)**: Manages environment variables securely using Pydantic and `python-dotenv`.
-- **Transport (`app/transport.py`)**: WebRTC transport adapter using Pipecat `DailyTransport` or `SmallWebRTCTransport`.
-- **Pipeline (`app/pipeline.py`)**: Assembles real-time streaming pipeline (`STT -> LLM -> TTS`) with interruption and turn management.
-- **Service Adapters (`app/services/`)**: Decoupled provider adapters for STT, LLM, and TTS services.
-
-## 3. Call Lifecycle
-
-1. User opens web application and clicks **Start Call**.
-2. Browser requests microphone access via `getUserMedia()`.
-3. React app sends POST to `/api/start`.
-4. Backend creates room credentials and spawns Pipecat pipeline in an asynchronous worker.
-5. React app establishes WebRTC connection with Pipecat backend.
-6. User speaks; microphone audio streams to Pipecat STT.
-7. Recognized text flows to LLM; LLM stream flows to TTS.
-8. AI audio streams back over WebRTC and plays in browser speakers.
-9. Click **End Call** closes WebRTC peer connection, releases microphone, and stops backend Pipecat session worker.
-10. Application returns to `Idle` state, ready for another call without page refresh.
+1. **Audio Transports (`backend/app/audio/transports/`)**: Clean abstraction for WebRTC and FreeSWITCH WebSocket audio streaming.
+2. **Audio Codec (`backend/app/audio/codec.py`)**: High-performance linear interpolation 8kHz ↔ 16kHz PCM audio resampling.
+3. **Noise Cancellation (`backend/app/noise_cancellation/`)**: Pluggable noise suppression manager supporting RNNoise, WebRTC APM, DeepFilterNet, and Passthrough.
+4. **Tool Calling Framework (`backend/app/tools/`)**: ToolRegistry and ToolExecutor managing real-time web search (`web_search`) and custom tools with barge-in cancellation.
+5. **Telephony & FreeSWITCH (`backend/app/telephony/freeswitch/`)**: Event Socket Layer (ESL) client and CallSession event listener for SIP/PSTN call management.

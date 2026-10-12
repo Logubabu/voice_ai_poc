@@ -1,6 +1,5 @@
 import logging
 import sys
-from typing import Optional
 
 
 def setup_logger(name: str = "voice_ai_poc", log_level: str = "INFO") -> logging.Logger:

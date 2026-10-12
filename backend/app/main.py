@@ -1,5 +1,5 @@
 import uuid
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -8,6 +8,7 @@ from app.pipeline import pipeline_manager
 from app.transport import create_webrtc_transport
 from app.services.audio_processor import audio_processor_factory
 from app.services.freeswitch_esl import freeswitch_esl_service
+from app.telephony.twilio_service import twilio_service
 from app.utils.logging import logger
 from app.utils.patches import apply_aioice_patches, setup_asyncio_exception_handler
 
@@ -20,6 +21,10 @@ app = FastAPI(
     version="0.1.0",
 )
 
+from app.routers.knowledge_base import router as kb_router
+from app.routers.callbacks import router as callbacks_router
+from app.callbacks.scheduler import callback_scheduler_worker
+
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
@@ -28,6 +33,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Include REST API routers
+app.include_router(kb_router)
+app.include_router(callbacks_router)
 
 
 @app.on_event("startup")
@@ -54,7 +63,19 @@ async def warm_up_services():
         logger.info("[CONFIG] Voice pipeline pre-warming complete. Backend ready for WebRTC connections.")
     except Exception as e:
         logger.warning(f"[CONFIG] Pre-warming notice: {e}")
+
+    # Start background scheduled callback worker
+    if getattr(config, "CALLBACK_WORKER_ENABLED", True):
+        await callback_scheduler_worker.start()
+
     logger.info("==================================================")
+
+
+@app.on_event("shutdown")
+async def shutdown_services():
+    """Gracefully shuts down background workers."""
+    if getattr(config, "CALLBACK_WORKER_ENABLED", True):
+        await callback_scheduler_worker.stop()
 
 
 from pipecat.transports.smallwebrtc.request_handler import SmallWebRTCRequestHandler, SmallWebRTCRequest
@@ -65,6 +86,8 @@ webrtc_request_handler = SmallWebRTCRequestHandler()
 
 class StartCallRequest(BaseModel):
     session_id: str | None = None
+    tenant_id: str | None = "default_tenant"
+    knowledge_base_id: str | None = None
 
 
 class StopCallRequest(BaseModel):
@@ -76,6 +99,8 @@ class OfferRequest(BaseModel):
     type: str = "offer"
     pc_id: str | None = None
     session_id: str | None = None
+    tenant_id: str | None = "default_tenant"
+    knowledge_base_id: str | None = None
 
 
 class NoiseCancellationRequest(BaseModel):
@@ -85,6 +110,17 @@ class NoiseCancellationRequest(BaseModel):
 class ESLExecuteRequest(BaseModel):
     command: str
     args: str = ""
+
+
+class OutboundCallRequest(BaseModel):
+    phone_number: str
+    gateway: str = "default"
+
+
+class TwilioCallRequest(BaseModel):
+    phone_number: str
+    from_number: str | None = None
+    twiml_url: str | None = None
 
 
 @app.get("/")
@@ -111,6 +147,10 @@ async def get_config_status():
         "tts": {
             "provider": config.TTS_PROVIDER,
             "configured": bool(config.ELEVENLABS_API_KEY or config.TTS_API_KEY),
+        },
+        "twilio": {
+            "configured": bool(config.TWILIO_ACCOUNT_SID and config.TWILIO_AUTH_TOKEN),
+            "from_number": config.TWILIO_FROM_NUMBER,
         },
     }
 
@@ -145,12 +185,116 @@ async def execute_freeswitch_esl(req: ESLExecuteRequest):
     return freeswitch_esl_service.execute_esl_command(req.command, req.args)
 
 
+from fastapi import Request
+from app.telephony.provider import get_telephony_provider
+
+
+@app.api_route("/api/twilio/voice", methods=["GET", "POST", "HEAD"])
+@app.api_route("/api/telephony/twilio/voice", methods=["GET", "POST", "HEAD"])
+@app.api_route("/api/telephony/twilio/twiml", methods=["GET", "POST", "HEAD"])
+async def get_twilio_voice_twiml(request: Request):
+    """Twilio Inbound Call Webhook. Returns TwiML XML payload to connect call audio to Pipecat WebSocket stream."""
+    twiml_url_override = None
+    try:
+        public_url = config.TWILIO_WEBHOOK_BASE_URL or config.PUBLIC_BASE_URL
+        if public_url and "localhost" not in public_url and "127.0.0.1" not in public_url:
+            clean_host = public_url.replace("wss://", "").replace("ws://", "").replace("https://", "").replace("http://", "").rstrip("/")
+            twiml_url_override = f"wss://{clean_host}/api/twilio/media-stream"
+        else:
+            req_host = request.headers.get("x-forwarded-host") or request.headers.get("host") or request.url.netloc or ""
+            req_host = req_host.split(",")[0].strip()
+            is_local = "localhost" in req_host or "127.0.0.1" in req_host
+            ws_scheme = "ws" if is_local else "wss"
+            twiml_url_override = f"{ws_scheme}://{req_host}/api/twilio/media-stream"
+            if is_local:
+                logger.warning(
+                    f"[TWILIO-WEBHOOK][WARNING] Media stream URL is pointing to localhost ('{twiml_url_override}'). "
+                    "Twilio cloud servers cannot reach localhost! Set PUBLIC_BASE_URL in .env to your public ngrok/devtunnels URL."
+                )
+    except Exception as e:
+        logger.warning(f"[TWILIO-WEBHOOK] Could not parse host from request headers: {e}")
+
+    twiml_xml = twilio_service.generate_twiml(websocket_url=twiml_url_override)
+    return Response(content=twiml_xml, media_type="application/xml")
+
+
+@app.post("/api/twilio/call")
+@app.post("/api/telephony/twilio/outbound-call")
+async def twilio_outbound_call(req: TwilioCallRequest):
+    """Initiates an outbound phone call via Twilio REST API."""
+    phone_number = req.phone_number.strip()
+    if not phone_number or len(phone_number) < 5:
+        raise HTTPException(status_code=400, detail="Invalid phone number format. Provide full E.164 number.")
+
+    provider = get_telephony_provider("twilio")
+    res = await provider.initiate_outbound_call(
+        to_number=phone_number,
+        from_number=req.from_number,
+        twiml_url=req.twiml_url,
+    )
+    if not res.get("success"):
+        raise HTTPException(status_code=500, detail=res.get("error", "Twilio call creation failed"))
+
+    return {
+        "status": res.get("status", "queued"),
+        "call_sid": res.get("call_sid"),
+        "session_id": res.get("call_sid"),
+        "phone_number": phone_number,
+        "raw_response": res.get("raw_response"),
+    }
+
+
+@app.post("/api/telephony/outbound-call")
+async def make_outbound_phone_call(req: OutboundCallRequest):
+    """Initiates an outbound web/telephony call to a phone number via Twilio or FreeSWITCH SIP gateway."""
+    logger.info(f"[OUTBOUND-CALL] Dialing phone number '{req.phone_number}' via gateway '{req.gateway}'")
+    provider_name = "twilio" if req.gateway.lower() == "twilio" else "freeswitch"
+    provider = get_telephony_provider(provider_name)
+    res = await provider.initiate_outbound_call(to_number=req.phone_number, gateway=req.gateway)
+    return {
+        "status": "initiated",
+        "provider": provider_name,
+        "phone_number": req.phone_number,
+        "gateway": req.gateway,
+        "result": res,
+    }
+
+
+from fastapi import WebSocket
+from app.telephony.freeswitch.ws_stream import handle_freeswitch_audio_ws
+from app.telephony.twilio_ws import handle_twilio_audio_ws
+
+
+@app.websocket("/api/webrtc/freeswitch/ws")
+async def freeswitch_audio_websocket(websocket: WebSocket, session_id: str = "session_phone_001", uuid: str = "uuid_phone_001"):
+    """WebSocket endpoint for FreeSWITCH media audio streaming (Mode B Phone Call)."""
+    await handle_freeswitch_audio_ws(websocket=websocket, session_id=session_id, freeswitch_uuid=uuid)
+
+
+@app.websocket("/api/twilio/media-stream")
+@app.websocket("/api/telephony/twilio/ws")
+async def twilio_audio_websocket(websocket: WebSocket):
+    """WebSocket endpoint for Twilio Media Streams (Mode B Phone Call)."""
+    await handle_twilio_audio_ws(websocket=websocket)
+
+
+@app.get("/api/audio/transports/status")
+async def get_transports_status():
+    """Gets status of active voice transports (WebRTC WebCall vs Phone FreeSWITCH)."""
+    from app.telephony.freeswitch.event_listener import freeswitch_event_listener
+    return {
+        "supported_transports": ["webrtc", "freeswitch"],
+        "freeswitch_summary": freeswitch_event_listener.get_session_summary(),
+    }
+
+
+
 @app.post("/api/start")
 async def start_call(req: StartCallRequest | None = None):
     """Initializes a new Voice AI logical session ID without starting an unattached pipeline."""
     session_id = (req and req.session_id) or f"session_{uuid.uuid4().hex[:8]}"
-    logger.info(f"==================================================")
-    logger.info(f"VOICE AI SESSION")
+    logger.info("==================================================")
+    logger.info("VOICE AI SESSION")
     logger.info(f"[SESSION] Created: {session_id}")
 
     return {
@@ -163,7 +307,7 @@ async def start_call(req: StartCallRequest | None = None):
 async def webrtc_offer(req: OfferRequest):
     """Handles WebRTC SDP offer/answer negotiation and creates the browser-connected Pipecat pipeline."""
     session_id = req.session_id or f"session_{uuid.uuid4().hex[:8]}"
-    logger.info(f"[WEBRTC] SDP offer received")
+    logger.info(f"[WEBRTC] SDP offer received for session '{session_id}'")
 
     try:
         request = SmallWebRTCRequest(
@@ -182,15 +326,17 @@ async def webrtc_offer(req: OfferRequest):
                 await pipeline_manager.stop_session(session_id)
 
             transport = create_webrtc_transport(connection=connection, cfg=config)
-            logger.info(f"[WEBRTC] Transport created")
+            logger.info(f"[WEBRTC] Transport created for session '{session_id}'")
 
             # Attach and start the Pipecat pipeline to this actual WebRTC connection
             await pipeline_manager.start_session(
                 session_id=session_id,
                 transport=transport,
                 connection=connection,
+                tenant_id=req.tenant_id or "default_tenant",
+                knowledge_base_id=req.knowledge_base_id,
             )
-            logger.info(f"[WEBRTC] connected")
+            logger.info(f"[WEBRTC] WebRTC session '{session_id}' connected successfully")
 
         answer = await webrtc_request_handler.handle_web_request(
             request=request,

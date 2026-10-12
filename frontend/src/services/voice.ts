@@ -9,10 +9,17 @@ export type CallState =
   | 'connected'
   | 'listening'
   | 'processing'
+  | 'searching'
   | 'speaking'
   | 'ending'
   | 'disconnected'
   | 'error';
+
+export interface SourceItem {
+  title: string;
+  url: string;
+  source?: string;
+}
 
 export interface TranscriptItem {
   id: string;
@@ -22,6 +29,7 @@ export interface TranscriptItem {
   toolName?: string;
   toolArgs?: any;
   toolResult?: any;
+  sources?: SourceItem[];
 }
 
 export interface NoiseCancellationInfo {
@@ -76,10 +84,6 @@ export class VoiceCallService {
           echoCancellation: true,
           noiseSuppression: true,
           autoGainControl: true,
-          channelCount: 1,
-          sampleRate: 16000,
-          // @ts-ignore
-          latency: 0.0,
         },
       });
       console.log('[MIC] Permission granted');
@@ -141,7 +145,7 @@ export class VoiceCallService {
 
     // 2. Attach persistent HTMLAudioElement for incoming remote audio track
     pc.ontrack = async (event) => {
-      console.log('[AUDIO] Remote track:', event.track.kind);
+      console.log('[CHECKPOINT 13: CLIENT_AUDIO_RECEIVED] Remote track kind:', event.track.kind, 'id:', event.track.id);
       const stream = event.streams[0] || new MediaStream([event.track]);
       if (this.remoteAudio) {
         if (!document.body.contains(this.remoteAudio)) {
@@ -150,14 +154,17 @@ export class VoiceCallService {
         this.remoteAudio.muted = false;
         this.remoteAudio.volume = 1.0;
         this.remoteAudio.srcObject = stream;
+        console.log('[CHECKPOINT 14: CLIENT_AUDIO_DECODED] MediaStream bound to HTMLAudioElement');
         try {
           await this.remoteAudio.play();
-          console.log('[AUDIO] Remote audio track active and playing successfully');
+          console.log('[CHECKPOINT 15: CLIENT_PLAYBACK_STARTED] Remote audio playing successfully');
         } catch (error) {
           console.warn('[AUDIO] Autoplay prevented, unlocking on document click:', error);
           window.addEventListener('click', () => {
             if (this.remoteAudio) {
-              this.remoteAudio.play().catch(() => {});
+              this.remoteAudio.play().then(() => {
+                console.log('[CHECKPOINT 15: CLIENT_PLAYBACK_STARTED] Unlocked playback started on click');
+              }).catch(() => {});
             }
           }, { once: true });
         }
@@ -173,7 +180,7 @@ export class VoiceCallService {
           const stats = await this.peerConnection.getStats();
           stats.forEach((report) => {
             if (report.type === 'inbound-rtp' && report.kind === 'audio') {
-              console.log(`[AUDIO][STATS] inbound-rtp audio bytesReceived: ${report.bytesReceived}`);
+              console.log(`[CHECKPOINT 16: CLIENT_PLAYBACK_COMPLETED] inbound-rtp bytesReceived=${report.bytesReceived} packetsReceived=${report.packetsReceived}`);
             }
           });
         } catch (err) {
@@ -236,13 +243,12 @@ export class VoiceCallService {
         const data = JSON.parse(event.data);
         if (data.type === 'interruption') {
           console.log('[WEBRTC] User barge-in interruption received');
-          if (this.remoteAudio) {
-            this.remoteAudio.pause();
-          }
           this.onStateUpdate?.('listening');
         } else if (data.type === 'state' && data.state) {
           if (data.state === 'speaking' && this.remoteAudio && this.remoteAudio.paused) {
-            this.remoteAudio.play().catch(() => {});
+            this.remoteAudio.play().catch((err) => {
+              console.warn('[AUDIO] Failed to play remoteAudio on speaking state:', err);
+            });
           }
           this.onStateUpdate?.(data.state as CallState);
         } else if (data.type === 'error') {
@@ -272,6 +278,7 @@ export class VoiceCallService {
             toolName: data.tool_name,
             toolArgs: data.args,
             toolResult: data.result,
+            sources: data.result?.sources || undefined,
             timestamp: data.timestamp || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
           });
         }
@@ -430,6 +437,22 @@ export class VoiceCallService {
       body: JSON.stringify({ command, args }),
     });
     if (!res.ok) throw new Error('Failed to execute FreeSWITCH ESL command');
+    return await res.json();
+  }
+
+  /**
+   * Triggers FreeSWITCH to initiate an outbound call to a target phone number.
+   */
+  async makeOutboundCall(phoneNumber: string, gateway: string = 'default'): Promise<any> {
+    const res = await fetch(`${BACKEND_URL}/api/telephony/outbound-call`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phone_number: phoneNumber, gateway }),
+    });
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`Outbound call request failed (${res.status}): ${errText}`);
+    }
     return await res.json();
   }
 }
