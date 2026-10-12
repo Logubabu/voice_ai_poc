@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <document type="freeswitch/xml">
+  <X-PRE-PROCESS cmd="include" data="vars.xml"/>
   <section name="configuration" description="Various Configuration">
     <X-PRE-PROCESS cmd="include" data="autoload_configs/*.xml"/>
   </section>
