@@ -1,0 +1,127 @@
+name: Deploy Voice AI to AWS
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AWS_REGION: ap-south-1
+  ECR_REPOSITORY: voice-ai-poc
+  ECS_CLUSTER: voice-ai-cluster
+  ECS_SERVICE: voice-ai-service
+  ECS_TASK_DEFINITION: aws/ecs-task-definition.json
+  CONTAINER_NAME: voice-ai
+
+jobs:
+  build-and-deploy:
+    name: Build, Push and Deploy
+    runs-on: ubuntu-latest
+
+    steps:
+      # ---------------------------------------------------------
+      # Checkout
+      # ---------------------------------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      # ---------------------------------------------------------
+      # AWS authentication using GitHub OIDC
+      # ---------------------------------------------------------
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ secrets.AWS_GITHUB_ACTIONS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: GitHubActionsVoiceAI
+
+      # ---------------------------------------------------------
+      # Login to ECR
+      # ---------------------------------------------------------
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # ---------------------------------------------------------
+      # Docker Buildx
+      # ---------------------------------------------------------
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # ---------------------------------------------------------
+      # Docker metadata
+      # ---------------------------------------------------------
+      - name: Generate Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}
+          tags: |
+            type=sha,prefix=
+            type=raw,value=latest
+
+      # ---------------------------------------------------------
+      # Build and Push Docker image
+      # ---------------------------------------------------------
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # ---------------------------------------------------------
+      # Download current ECS task definition
+      # ---------------------------------------------------------
+      - name: Download ECS task definition
+        run: |
+          aws ecs describe-task-definition \
+            --task-definition "$ECS_SERVICE" \
+            --query taskDefinition \
+            > task-definition.json
+
+      # ---------------------------------------------------------
+      # Update container image
+      # ---------------------------------------------------------
+      - name: Update ECS task definition
+        id: task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: task-definition.json
+          container-name: ${{ env.CONTAINER_NAME }}
+          image: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
+
+      # ---------------------------------------------------------
+      # Deploy ECS
+      # ---------------------------------------------------------
+      - name: Deploy to Amazon ECS
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.task-def.outputs.task-definition }}
+          service: ${{ env.ECS_SERVICE }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability: true
+
+      # ---------------------------------------------------------
+      # Deployment information
+      # ---------------------------------------------------------
+      - name: Deployment complete
+        run: |
+          echo "======================================"
+          echo "Voice AI deployment completed"
+          echo "Cluster : $ECS_CLUSTER"
+          echo "Service : $ECS_SERVICE"
+          echo "Image   : $ECR_REPOSITORY:${GITHUB_SHA}"
+          echo "======================================"
