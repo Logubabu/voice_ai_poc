@@ -89,9 +89,45 @@ CALLBACK_DEFAULT_TIMEZONE=Asia/Kolkata
 }
 ```
 
+## 🐳 Docker Quick Start (Single Container Run)
+
+The default Docker setup builds and runs the entire Voice AI platform (FreeSWITCH 1.10, FastAPI backend, and React/Vite UI proxied via Nginx) in a single production-ready container:
+
+### 1. Build the All-in-One Docker Image
+```bash
+docker build -t voice-ai-poc .
+```
+
+### 2. Single Docker Run Command
+```bash
+docker run -d \
+  --name voice-ai \
+  -p 5173:5173 \
+  -p 8000:8000 \
+  -p 5060:5060/udp \
+  -p 5060:5060/tcp \
+  -p 8021:8021 \
+  -p 8086:8086 \
+  --env-file .env \
+  voice-ai-poc
+```
+
+### 3. Or Run with Docker Compose (includes Qdrant & SearXNG)
+```bash
+docker compose up -d
+```
+
+| Service | Port | Description |
+| :--- | :--- | :--- |
+| **Frontend UI** | `5173` | React / Vite UI (Nginx reverse proxy) |
+| **Backend API** | `8000` | FastAPI WebRTC Signaling & REST API (`/health`, `/api/*`) |
+| **SIP Telephony** | `5060/udp`, `5060/tcp` | FreeSWITCH SIP Signaling |
+| **FreeSWITCH ESL**| `8021` | FreeSWITCH Event Socket Layer |
+| **Audio Stream** | `8086` | Real-time audio stream |
+
 ---
 
-## 🛠️ Installation & Quick Start
+## 🛠️ Local Development & Quick Start
 
 ### Backend
 

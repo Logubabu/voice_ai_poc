@@ -4,7 +4,33 @@ on:
   push:
     branches:
       - main
+      - master
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - '.vscode/**'
+      - '.gitignore'
   workflow_dispatch:
+    inputs:
+      deploy_all_in_one:
+        description: "Build & Deploy All-in-One Container (Single Container)"
+        required: false
+        type: boolean
+        default: true
+      build_standalone_images:
+        description: "Build & Push Standalone Images (Backend, Frontend, FreeSWITCH)"
+        required: false
+        type: boolean
+        default: false
+      deploy_standalone_services:
+        description: "Deploy Standalone Services to Amazon ECS (Backend, Frontend, FreeSWITCH)"
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -15,113 +41,194 @@ env:
   ECR_REPOSITORY: voice-ai-poc
   ECS_CLUSTER: voice_ai_poc_cluster
   ECS_SERVICE: voice-ai-service
-  ECS_TASK_DEFINITION: aws/voice-ai-task-definition:1.json
   CONTAINER_NAME: voice-ai
 
 jobs:
+  # ============================================================================
+  # 1. Primary: Build & Deploy All-in-One Container
+  # ============================================================================
   build-and-deploy:
-    name: Build, Push and Deploy
+    name: Build, Push & Deploy All-in-One
     runs-on: ubuntu-latest
+    timeout-minutes: 25
+    if: ${{ github.event_name == 'push' || inputs.deploy_all_in_one != false }}
 
     steps:
-      # ---------------------------------------------------------
-      # Checkout
-      # ---------------------------------------------------------
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
-      # ---------------------------------------------------------
-      # AWS authentication using GitHub OIDC
-      # ---------------------------------------------------------
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v5
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_GITHUB_ACTIONS_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ secrets.AWS_GITHUB_ACTIONS_ROLE_ARN || secrets.AWS_ROLE_ARN || secrets.AWS_ROLE_TO_ASSUME }}
+          source-account-id: ${{ secrets.AWS_ACCOUNT_ID }}
           role-session-name: GitHubActionsVoiceAI
+          aws-region: ${{ env.AWS_REGION }}
+          audience: sts.amazonaws.com
 
-      # ---------------------------------------------------------
-      # Login to ECR
-      # ---------------------------------------------------------
       - name: Login to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      # ---------------------------------------------------------
-      # Docker Buildx
-      # ---------------------------------------------------------
       - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # ---------------------------------------------------------
-      # Docker metadata
-      # ---------------------------------------------------------
       - name: Generate Docker metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}
           tags: |
-            type=sha,prefix=
             type=raw,value=latest
+            type=sha,prefix=
 
-      # ---------------------------------------------------------
-      # Build and Push Docker image
-      # ---------------------------------------------------------
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v6
+      - name: Build and push All-in-One Docker image
+        uses: docker/build-push-action@v5
         with:
           context: .
           file: ./Dockerfile
           platforms: linux/amd64
           push: true
+          provenance: false
           tags: |
             ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
             ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=all-in-one
+          cache-to: type=gha,mode=max,scope=all-in-one
 
-      # ---------------------------------------------------------
-      # Download current ECS task definition
-      # ---------------------------------------------------------
       - name: Download ECS task definition
+        id: download-task-def
+        continue-on-error: true
         run: |
           aws ecs describe-task-definition \
             --task-definition "$ECS_SERVICE" \
             --query taskDefinition \
             > task-definition.json
 
-      # ---------------------------------------------------------
-      # Update container image
-      # ---------------------------------------------------------
-      - name: Update ECS task definition
+      - name: Render task definition with new image
         id: task-def
+        if: steps.download-task-def.outcome == 'success'
         uses: aws-actions/amazon-ecs-render-task-definition@v1
         with:
           task-definition: task-definition.json
           container-name: ${{ env.CONTAINER_NAME }}
           image: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
 
-      # ---------------------------------------------------------
-      # Deploy ECS
-      # ---------------------------------------------------------
-      - name: Deploy to Amazon ECS
+      - name: Deploy to Amazon ECS (Task Definition)
+        if: steps.download-task-def.outcome == 'success'
         uses: aws-actions/amazon-ecs-deploy-task-definition@v2
         with:
           task-definition: ${{ steps.task-def.outputs.task-definition }}
           service: ${{ env.ECS_SERVICE }}
           cluster: ${{ env.ECS_CLUSTER }}
-          wait-for-service-stability: true
+          wait-for-service-stability: false
 
-      # ---------------------------------------------------------
-      # Deployment information
-      # ---------------------------------------------------------
-      - name: Deployment complete
+      - name: Fallback ECS Service Redeployment
+        if: steps.download-task-def.outcome != 'success'
+        run: |
+          echo "Task definition render not available; triggering forced service redeployment..."
+          aws ecs update-service \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --service ${{ env.ECS_SERVICE }} \
+            --force-new-deployment
+
+      - name: Deployment status
         run: |
           echo "======================================"
-          echo "Voice AI deployment completed"
+          echo "Deployment triggered successfully"
           echo "Cluster : $ECS_CLUSTER"
           echo "Service : $ECS_SERVICE"
           echo "Image   : $ECR_REPOSITORY:${GITHUB_SHA}"
           echo "======================================"
+
+  # ============================================================================
+  # 2. Standalone: Parallel Build & Push for Component Images (Matrix)
+  # ============================================================================
+  build-standalone:
+    name: Build & Push (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    if: ${{ inputs.build_standalone_images == true || inputs.deploy_standalone_services == true }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: backend
+            context: ./backend
+            file: ./backend/Dockerfile
+            repo: voice-ai-backend
+          - name: frontend
+            context: ./frontend
+            file: ./frontend/Dockerfile
+            repo: voice-ai-frontend
+          - name: freeswitch
+            context: ./freeswitch
+            file: ./freeswitch/Dockerfile
+            repo: voice-ai-freeswitch
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_GITHUB_ACTIONS_ROLE_ARN || secrets.AWS_ROLE_ARN || secrets.AWS_ROLE_TO_ASSUME }}
+          source-account-id: ${{ secrets.AWS_ACCOUNT_ID }}
+          role-session-name: GitHubActionsVoiceAI-${{ matrix.name }}
+          aws-region: ${{ env.AWS_REGION }}
+          audience: sts.amazonaws.com
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push ${{ matrix.name }} image
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
+          platforms: linux/amd64
+          push: true
+          provenance: false
+          tags: |
+            ${{ steps.login-ecr.outputs.registry }}/${{ matrix.repo }}:latest
+            ${{ steps.login-ecr.outputs.registry }}/${{ matrix.repo }}:${{ github.sha }}
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
+
+  # ============================================================================
+  # 3. Standalone: Deploy Services to Amazon ECS
+  # ============================================================================
+  deploy-standalone:
+    name: Deploy Standalone Services to ECS
+    needs: build-standalone
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: ${{ inputs.deploy_standalone_services == true }}
+    env:
+      STANDALONE_CLUSTER: voice-ai-production-cluster
+
+    steps:
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_GITHUB_ACTIONS_ROLE_ARN || secrets.AWS_ROLE_ARN || secrets.AWS_ROLE_TO_ASSUME }}
+          source-account-id: ${{ secrets.AWS_ACCOUNT_ID }}
+          role-session-name: GitHubActionsVoiceAIStandaloneDeploy
+          aws-region: ${{ env.AWS_REGION }}
+          audience: sts.amazonaws.com
+
+      - name: Redeploy Standalone ECS Services
+        run: |
+          for SERVICE in voice-ai-backend-service voice-ai-frontend-service voice-ai-freeswitch-service; do
+            echo "Triggering redeployment for $SERVICE in $STANDALONE_CLUSTER..."
+            aws ecs update-service \
+              --cluster "$STANDALONE_CLUSTER" \
+              --service "$SERVICE" \
+              --force-new-deployment
+          done

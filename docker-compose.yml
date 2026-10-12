@@ -1,96 +1,57 @@
 services:
-  backend:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: voice_ai_backend
-    restart: unless-stopped
-    ports:
-      - "8000:8000"       # FastAPI Backend REST API, WebRTC Signaling & Media
-    env_file:
-      - path: .env
-        required: false
-      - path: ./backend/.env
-        required: false
-    environment:
-      - FREESWITCH_HOST=freeswitch:8021
-      - FREESWITCH_ENABLED=true
-      - SEARXNG_URL=http://searxng:8080
-      - QDRANT_URL=http://qdrant:6333
-      - VECTOR_DB=qdrant
-    volumes:
-      - ./data:/app/data
-    depends_on:
-      freeswitch:
-        condition: service_healthy
-      qdrant:
-        condition: service_started
-      searxng:
-        condition: service_started
-    networks:
-      - voice-ai-network
-
-  frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
-      args:
-        - VITE_BACKEND_URL=
-    container_name: voice_ai_frontend
-    restart: unless-stopped
-    ports:
-      - "5173:5173"       # Vite / React Web UI served via Nginx
-    depends_on:
-      backend:
-        condition: service_healthy
-    networks:
-      - voice-ai-network
-
-  freeswitch:
-    build:
-      context: .
-      dockerfile: Dockerfile.freeswitch
-    container_name: voice_ai_freeswitch
-    restart: unless-stopped
-    ports:
-      - "5060:5060/udp"   # FreeSWITCH SIP UDP
-      - "5060:5060/tcp"   # FreeSWITCH SIP TCP
-      - "8086:8086"       # FreeSWITCH Audio Stream
-      # NOTE: Port 8021 (ESL) is NOT published to host for production security.
-      # It is accessible internally only via 'voice-ai-network' by backend:8021.
-    environment:
-      - FREESWITCH_ESL_PASSWORD=${FREESWITCH_ESL_PASSWORD:-ClueCon}
-      - BAIDU_MRCP_ENABLE=0
-      - DISABLE_IPV6=true
-      - FREESWITCH_RTP_START=16384
-      - FREESWITCH_RTP_END=32768
-    volumes:
-      - ./freeswitch/conf:/usr/local/freeswitch/etc/freeswitch:ro
-    networks:
-      - voice-ai-network
-
   searxng:
     image: searxng/searxng:latest
-    container_name: voice_ai_searxng
-    restart: unless-stopped
+    container_name: searxng
     ports:
       - "8080:8080"
     volumes:
       - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
     environment:
       - SEARXNG_BASE_URL=http://searxng:8080/
+    restart: unless-stopped
     networks:
       - voice-ai-network
 
   qdrant:
     image: qdrant/qdrant:latest
-    container_name: voice_ai_qdrant
-    restart: unless-stopped
+    container_name: qdrant
     ports:
       - "6333:6333"
       - "6334:6334"
     volumes:
       - ./qdrant_storage:/qdrant/storage:z
+    restart: unless-stopped
+    networks:
+      - voice-ai-network
+
+  voice-ai-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: voice_ai_all_in_one
+    ports:
+      - "5173:5173"       # Vite Frontend UI (Nginx)
+      - "8000:8000"       # FastAPI Backend API & WebRTC
+      - "5060:5060/udp"   # FreeSWITCH SIP UDP
+      - "5060:5060/tcp"   # FreeSWITCH SIP TCP
+      - "8021:8021"       # FreeSWITCH ESL
+      - "8086:8086"       # FreeSWITCH Audio Stream
+    env_file:
+      - path: .env
+        required: false
+      - path: ./backend/.env
+        required: false
+    environment:
+      - SEARXNG_URL=http://searxng:8080
+      - FREESWITCH_HOST=127.0.0.1:8021
+      - QDRANT_URL=http://qdrant:6333
+      - VECTOR_DB=qdrant
+    volumes:
+      - ./data:/app/backend/data
+    depends_on:
+      - searxng
+      - qdrant
+    restart: unless-stopped
     networks:
       - voice-ai-network
 

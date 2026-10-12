@@ -4,9 +4,8 @@
 # ==============================================================================
 FROM bytedesk/freeswitch:latest
 
-# FreeSWITCH environment defaults
-ENV FREESWITCH_ESL_PASSWORD=ClueCon \
-    BAIDU_MRCP_ENABLE=0 \
+# FreeSWITCH runtime environment defaults (no hard-coded passwords)
+ENV BAIDU_MRCP_ENABLE=0 \
     DISABLE_IPV6=true \
     FREESWITCH_RTP_START=16384 \
     FREESWITCH_RTP_END=32768
