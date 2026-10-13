@@ -1,4 +1,4 @@
-name: Build, Push & Deploy All-in-One
+name: Build and Push Docker Image to ECR
 
 on:
   push:
@@ -7,106 +7,40 @@ on:
     paths-ignore:
       - '**.md'
       - 'docs/**'
-      - '.vscode/**'
-      - '.gitignore'
   workflow_dispatch:
 
-# Never cancel a running deploy: killing it mid-rollout can leave the ECS
-# service half-updated. Newer pushes queue up and run after the current one.
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: false
-
 permissions:
-  id-token: write
+  id-token: write   # required for OIDC
   contents: read
 
 env:
   AWS_REGION: ap-southeast-2
   ECR_REPOSITORY: voice-ai-poc
-  ECS_CLUSTER: voice_ai_poc_cluster
-  ECS_SERVICE: voice-ai-service
-  CONTAINER_NAME: voice-ai
 
 jobs:
-  deploy:
-    name: Build, Push & Deploy to Amazon ECS
+  build-and-push:
+    name: Build and Push to Amazon ECR
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-
-      - name: Validate IAM Role ARN Format
-        shell: bash
-        env:
-          ROLE_ARN: ${{ secrets.AWS_GITHUB_ACTIONS_ROLE_ARN }}
-        run: |
-          if [ -z "$ROLE_ARN" ]; then
-            echo "::error::Secret AWS_GITHUB_ACTIONS_ROLE_ARN is missing or empty."
-            exit 1
-          fi
-
-          # Allows optional IAM paths, e.g. role/ci/my-role
-          if [[ ! "$ROLE_ARN" =~ ^arn:aws:iam::[0-9]{12}:role/([A-Za-z0-9_+=,.@-]+/)*[A-Za-z0-9_+=,.@-]+$ ]]; then
-            echo "::error::AWS_GITHUB_ACTIONS_ROLE_ARN is not a valid IAM role ARN."
-            echo "Expected: arn:aws:iam::<12-digit-account-id>:role/<role-name>"
-            echo "Check for a role name only, stray whitespace, or quotes."
-            echo "--- Diagnostics (value itself is masked) ---"
-            echo "Length                  : ${#ROLE_ARN}"
-            [[ "$ROLE_ARN" =~ [[:space:]] ]] && echo "Contains whitespace/newline: YES (re-save the secret without trailing spaces or newlines)"
-            [[ "$ROLE_ARN" == *\"* || "$ROLE_ARN" == *\'* ]] && echo "Contains quotes         : YES (remove the quotes)"
-            [[ "$ROLE_ARN" == arn:aws:iam::* ]] && echo "Starts with arn:aws:iam:: : yes" || echo "Starts with arn:aws:iam:: : NO"
-            [[ "$ROLE_ARN" == *:role/* ]] && echo "Contains :role/         : yes" || echo "Contains :role/         : NO (a role name alone is not enough)"
-            ACCT=$(echo "$ROLE_ARN" | cut -d: -f5)
-            echo "Account ID digits       : ${#ACCT} (must be 12)"
-            exit 1
-          fi
-
-          echo "AWS IAM role ARN format validation passed."
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_GITHUB_ACTIONS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
-          role-session-name: GitHubActionsVoiceAI
-
-      - name: Verify AWS identity
-        shell: bash
-        run: |
-          aws sts get-caller-identity --output json \
-            | jq -r '"Account: \(.Account)\nCaller : \(.Arn)"'
-
-      - name: Verify ECR repository and ECS service exist
-        shell: bash
-        run: |
-          aws ecr describe-repositories \
-            --repository-names "$ECR_REPOSITORY" >/dev/null || {
-            echo "::error::ECR repository '$ECR_REPOSITORY' not found in $AWS_REGION."
-            exit 1
-          }
-
-          STATUS=$(aws ecs describe-services \
-            --cluster "$ECS_CLUSTER" \
-            --services "$ECS_SERVICE" \
-            --query 'services[0].status' --output text)
-
-          if [ "$STATUS" != "ACTIVE" ]; then
-            echo "::error::ECS service '$ECS_SERVICE' in cluster '$ECS_CLUSTER' is not ACTIVE (got: $STATUS)."
-            exit 1
-          fi
 
       - name: Login to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Setup Docker Buildx
+      - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build and push All-in-One Docker image
-        id: build-image
+      - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -117,60 +51,10 @@ jobs:
           tags: |
             ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
             ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
-          cache-from: type=gha,scope=voice-ai-poc
-          cache-to: type=gha,mode=max,scope=voice-ai-poc
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
-      # The task definition family name is often NOT the same as the service
-      # name, so read it from the service itself instead of guessing.
-      - name: Download current ECS task definition
-        shell: bash
+      - name: Summary
         run: |
-          TASK_DEF_ARN=$(aws ecs describe-services \
-            --cluster "$ECS_CLUSTER" \
-            --services "$ECS_SERVICE" \
-            --query 'services[0].taskDefinition' --output text)
-
-          echo "Current task definition: $TASK_DEF_ARN"
-
-          aws ecs describe-task-definition \
-            --task-definition "$TASK_DEF_ARN" \
-            --query taskDefinition > task-definition.json
-
-      - name: Render task definition with new image
-        id: task-def
-        uses: aws-actions/amazon-ecs-render-task-definition@v1
-        with:
-          task-definition: task-definition.json
-          container-name: ${{ env.CONTAINER_NAME }}
-          image: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
-
-      - name: Deploy to Amazon ECS
-        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
-        with:
-          task-definition: ${{ steps.task-def.outputs.task-definition }}
-          service: ${{ env.ECS_SERVICE }}
-          cluster: ${{ env.ECS_CLUSTER }}
-          wait-for-service-stability: true
-          wait-for-minutes: 15
-
-      - name: Deployment summary
-        if: always()
-        shell: bash
-        env:
-          REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-        run: |
-          echo "=========================================================="
-          echo "Region    : $AWS_REGION"
-          echo "Cluster   : $ECS_CLUSTER"
-          echo "Service   : $ECS_SERVICE"
-          echo "Container : $CONTAINER_NAME"
-          echo "Image     : ${REGISTRY}/${ECR_REPOSITORY}:${GITHUB_SHA}"
-          echo "=========================================================="
-
-          if aws sts get-caller-identity >/dev/null 2>&1; then
-            aws ecs describe-services \
-              --cluster "$ECS_CLUSTER" \
-              --services "$ECS_SERVICE" \
-              --query "services[0].deployments[*].{Status:status,Rollout:rolloutState,Desired:desiredCount,Running:runningCount,Pending:pendingCount,TaskDef:taskDefinition}" \
-              --output table || true
-          fi
+          echo "Pushed image:"
+          echo "${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}"
