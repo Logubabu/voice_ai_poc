@@ -5,17 +5,13 @@ on:
     branches:
       - main
 
-permissions:
-  id-token: write   # Required for OIDC token generation
-  contents: read
-
 env:
   AWS_REGION: ap-southeast-2
   ECR_REPOSITORY: voice-ai-poc
   ECS_CLUSTER: voice_ai_fr_cluster
   ECS_SERVICE: voice-ai-service-VAI
   TASK_DEFINITION: voice-ai-task-definition
-  CONTAINER_NAME: voice-ai   # Must match the container name in your task definition
+  CONTAINER_NAME: voice-ai
 
 jobs:
   deploy:
@@ -25,12 +21,12 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Configure AWS credentials via OIDC
+      - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::291200967799:role/GitHubActionsVoiceAI
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
-          audience: sts.amazonaws.com
 
       - name: Login to Amazon ECR
         id: login-ecr
