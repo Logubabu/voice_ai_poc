@@ -60,6 +60,12 @@ class Config:
     MAX_TOOL_CALLS_PER_TURN: int = _safe_int(os.getenv("MAX_TOOL_CALLS_PER_TURN"), 3)
     MAX_WEB_SEARCHES_PER_SESSION: int = _safe_int(os.getenv("MAX_WEB_SEARCHES_PER_SESSION"), 20)
 
+    # WebRTC Network & Port Range Configuration (Docker & NAT traversal)
+    RTC_PORT_START: int = _safe_int(os.getenv("RTC_PORT_START"), 50000)
+    RTC_PORT_END: int = _safe_int(os.getenv("RTC_PORT_END"), 50020)
+    WEBRTC_HOST: str = os.getenv("WEBRTC_HOST", "")
+    ICE_SERVERS: str = os.getenv("ICE_SERVERS", "stun:stun.l.google.com:19302,stun:stun1.l.google.com:19302,stun:stun2.l.google.com:19302")
+
     # Web Search & Web Fetch Configuration
     SEARCH_PROVIDER: str = os.getenv("WEB_SEARCH_PROVIDER", os.getenv("SEARCH_PROVIDER", "duckduckgo")).lower()
     WEB_SEARCH_PROVIDER: str = os.getenv("WEB_SEARCH_PROVIDER", os.getenv("SEARCH_PROVIDER", "duckduckgo")).lower()

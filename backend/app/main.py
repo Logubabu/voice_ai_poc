@@ -79,9 +79,29 @@ async def shutdown_services():
 
 
 from pipecat.transports.smallwebrtc.request_handler import SmallWebRTCRequestHandler, SmallWebRTCRequest
-from pipecat.transports.smallwebrtc.connection import SmallWebRTCConnection
+from pipecat.transports.smallwebrtc.connection import SmallWebRTCConnection, IceServer
 
-webrtc_request_handler = SmallWebRTCRequestHandler()
+def _build_ice_servers():
+    ice_servers = []
+    raw = getattr(config, "ICE_SERVERS", "") or "stun:stun.l.google.com:19302"
+    for item in raw.split(","):
+        item = item.strip()
+        if item:
+            ice_servers.append(IceServer(urls=item))
+    return ice_servers
+
+webrtc_request_handler = SmallWebRTCRequestHandler(ice_servers=_build_ice_servers())
+
+
+class CandidateItem(BaseModel):
+    candidate: str | None = None
+    sdp_mid: str | None = None
+    sdp_mline_index: int | None = None
+
+
+class PatchCandidatesRequest(BaseModel):
+    pc_id: str
+    candidates: list[CandidateItem]
 
 
 class StartCallRequest(BaseModel):
@@ -325,6 +345,12 @@ async def webrtc_offer(req: OfferRequest):
                 logger.info(f"[WEBRTC] Connection closed for pc_id: {conn.pc_id}. Stopping session '{session_id}'")
                 await pipeline_manager.stop_session(session_id)
 
+            # Wait briefly for aiortc ICE gathering to complete so srflx & host candidates are in answer
+            for _ in range(12):
+                if hasattr(connection, "pc") and connection.pc.iceGatheringState == "complete":
+                    break
+                await asyncio.sleep(0.05)
+
             transport = create_webrtc_transport(connection=connection, cfg=config)
             logger.info(f"[WEBRTC] Transport created for session '{session_id}'")
 
@@ -342,11 +368,59 @@ async def webrtc_offer(req: OfferRequest):
             request=request,
             webrtc_connection_callback=on_connection,
         )
+
+        # Munge SDP answer candidates to support Docker container-to-host and NAT loopback
+        if answer and "sdp" in answer:
+            answer_sdp = answer["sdp"]
+            webrtc_host = config.WEBRTC_HOST.strip() if getattr(config, "WEBRTC_HOST", None) else ""
+            lines = answer_sdp.splitlines()
+            new_lines = []
+            for line in lines:
+                new_lines.append(line)
+                if line.startswith("a=candidate:") and " typ host" in line:
+                    parts = line.split(" ")
+                    if len(parts) >= 8:
+                        candidate_ip = parts[4]
+                        if candidate_ip.startswith("172.") or candidate_ip.startswith("10."):
+                            # Add 127.0.0.1 candidate for host machine browser reaching port-mapped Docker container
+                            lh_parts = list(parts)
+                            lh_parts[0] = parts[0] + "lh"
+                            lh_parts[4] = "127.0.0.1"
+                            new_lines.append(" ".join(lh_parts))
+
+                            if webrtc_host and webrtc_host not in ("127.0.0.1", candidate_ip):
+                                ext_parts = list(parts)
+                                ext_parts[0] = parts[0] + "ext"
+                                ext_parts[4] = webrtc_host
+                                new_lines.append(" ".join(ext_parts))
+            answer["sdp"] = "\r\n".join(new_lines) + "\r\n"
+
         logger.info(f"[WEBRTC] SDP answer returned to browser for session '{session_id}'")
         return answer
     except Exception as e:
         logger.exception(f"[WEBRTC][ERROR] SDP offer negotiation failed: {e}")
         raise HTTPException(status_code=500, detail=f"WebRTC offer failed: {str(e)}")
+
+
+@app.patch("/api/webrtc/patch")
+async def webrtc_patch(req: PatchCandidatesRequest):
+    """Handles Trickle ICE candidate updates from browser."""
+    try:
+        from pipecat.transports.smallwebrtc.request_handler import SmallWebRTCPatchRequest, IceCandidate
+        patch_candidates = [
+            IceCandidate(
+                candidate=c.candidate or "",
+                sdp_mid=c.sdp_mid or "",
+                sdp_mline_index=c.sdp_mline_index or 0,
+            )
+            for c in req.candidates
+        ]
+        patch_req = SmallWebRTCPatchRequest(pc_id=req.pc_id, candidates=patch_candidates)
+        await webrtc_request_handler.handle_patch_request(patch_req)
+        return {"status": "ok"}
+    except Exception as e:
+        logger.debug(f"[WEBRTC] Notice handling trickle candidate: {e}")
+        return {"status": "ignored"}
 
 
 @app.post("/api/stop")

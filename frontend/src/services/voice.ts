@@ -52,10 +52,25 @@ export interface FreeSwitchStatus {
   recent_commands: Array<{ timestamp: string; command: string; response: string; status: string }>;
 }
 
-const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000';
+const getBackendUrl = (): string => {
+  if (import.meta.env.VITE_BACKEND_URL) {
+    return import.meta.env.VITE_BACKEND_URL;
+  }
+  if (typeof window !== 'undefined') {
+    // When served via Nginx (port 5173), API calls are reverse-proxied at /api
+    if (window.location.port === '5173') {
+      return '';
+    }
+    return `${window.location.protocol}//${window.location.hostname}:8000`;
+  }
+  return 'http://localhost:8000';
+};
+
+const BACKEND_URL = getBackendUrl();
 
 export class VoiceCallService {
   private sessionId: string | null = null;
+  private pcId: string | null = null;
   private mediaStream: MediaStream | null = null;
   private peerConnection: RTCPeerConnection | null = null;
   private remoteAudio: HTMLAudioElement | null = null;
@@ -131,6 +146,30 @@ export class VoiceCallService {
       console.log('[WEBRTC] iceGatheringState:', pc.iceGatheringState);
     };
 
+    pc.onicecandidate = async (event) => {
+      if (event.candidate) {
+        console.log('[WEBRTC] Discovered ICE candidate:', event.candidate.candidate);
+        if (this.pcId && pc.connectionState !== 'connected') {
+          try {
+            await fetch(`${BACKEND_URL}/api/webrtc/patch`, {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                pc_id: this.pcId,
+                candidates: [{
+                  candidate: event.candidate.candidate,
+                  sdp_mid: event.candidate.sdpMid,
+                  sdp_mline_index: event.candidate.sdpMLineIndex,
+                }],
+              }),
+            });
+          } catch (e) {
+            // Trickle candidate send is non-blocking
+          }
+        }
+      }
+    };
+
     pc.onsignalingstatechange = () => {
       console.log('[WEBRTC] signalingState:', pc.signalingState);
     };
@@ -197,23 +236,41 @@ export class VoiceCallService {
       this.setupDataChannel(event.channel);
     };
 
-    // 4. Create SDP offer
+    // 4. Create SDP offer and gather ICE candidates
     console.log('[WEBRTC] Creating offer');
     const offer = await pc.createOffer();
-    console.log('[WEBRTC] Local description set');
+    console.log('[WEBRTC] Local description set, gathering candidates...');
     await pc.setLocalDescription(offer);
 
-    const offerHasAudio = offer.sdp?.includes('m=audio') ?? false;
-    console.log(`[WEBRTC] Offer contains audio: ${offerHasAudio}`);
+    // Wait for ICE gathering to complete so all candidates (host + srflx) are in the offer
+    if (pc.iceGatheringState !== 'complete') {
+      await new Promise<void>((resolve) => {
+        const checkState = () => {
+          if (pc.iceGatheringState === 'complete') {
+            pc.removeEventListener('icegatheringstatechange', checkState);
+            resolve();
+          }
+        };
+        pc.addEventListener('icegatheringstatechange', checkState);
+        setTimeout(() => {
+          pc.removeEventListener('icegatheringstatechange', checkState);
+          resolve();
+        }, 1200);
+      });
+    }
 
-    // 5. Send SDP offer to backend
-    console.log('[WEBRTC] Sending offer');
+    const sdpToSend = pc.localDescription?.sdp || offer.sdp;
+    const offerHasAudio = sdpToSend?.includes('m=audio') ?? false;
+    console.log(`[WEBRTC] Offer contains audio: ${offerHasAudio}, ICE state: ${pc.iceGatheringState}`);
+
+    // 5. Send SDP offer with candidates to backend
+    console.log('[WEBRTC] Sending offer to backend');
     const response = await fetch(`${BACKEND_URL}/api/webrtc/offer`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        sdp: offer.sdp,
-        type: offer.type,
+        sdp: sdpToSend,
+        type: pc.localDescription?.type || offer.type,
         session_id: sessionId,
       }),
     });
@@ -226,6 +283,9 @@ export class VoiceCallService {
 
     const answer = await response.json();
     console.log('[WEBRTC] Answer received');
+    if (answer.pc_id) {
+      this.pcId = answer.pc_id;
+    }
 
     const answerHasAudio = answer.sdp?.includes('m=audio') ?? false;
     console.log(`[WEBRTC] Answer contains audio: ${answerHasAudio}`);
@@ -376,6 +436,7 @@ export class VoiceCallService {
     }
 
     this.sessionId = null;
+    this.pcId = null;
     this.onStateUpdate?.('disconnected');
     setTimeout(() => this.onStateUpdate?.('idle'), 500);
   }

@@ -83,7 +83,8 @@ COPY docker/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 # 5060/tcp  - FreeSWITCH SIP TCP
 # 8021      - FreeSWITCH ESL (Event Socket Library)
 # 8086      - FreeSWITCH Audio Stream
-EXPOSE 5173 8000 5060/udp 5060/tcp 8021 8086
+# 50000-50020/udp - WebRTC Audio RTP/RTCP
+EXPOSE 5173 8000 5060/udp 5060/tcp 8021 8086 50000-50020/udp
 
 # Container healthcheck against backend /health endpoint
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
