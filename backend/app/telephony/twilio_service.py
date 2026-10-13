@@ -1,6 +1,6 @@
 import httpx
 from typing import Dict, Any, Optional
-from app.config import config
+from app.config import config, get_hosted_url
 from app.utils.logging import logger
 from app.utils.audit import audit_logger
 
@@ -19,6 +19,8 @@ class TwilioService:
         to_number: str,
         from_number: Optional[str] = None,
         twiml_url: Optional[str] = None,
+        request: Optional[Any] = None,
+        base_url: Optional[str] = None,
         timeout: float = 10.0,
     ) -> Dict[str, Any]:
         """Makes an outbound phone call via Twilio REST API.
@@ -27,10 +29,12 @@ class TwilioService:
             to_number: Target recipient phone number (e.g. +919876543210)
             from_number: Sender Twilio phone number (defaults to config.TWILIO_FROM_NUMBER)
             twiml_url: Optional TwiML URL for handling call voice/WebSocket stream
+            request: Optional incoming HTTP Request for resolving hosted URL
+            base_url: Optional explicit base URL
         """
         account_sid = config.TWILIO_ACCOUNT_SID or self.account_sid
         auth_token = config.TWILIO_AUTH_TOKEN or self.auth_token
-        caller_id = from_number or config.TWILIO_FROM_NUMBER or config.TWILIO_PHONE_NUMBER or self.from_number
+        caller_id = from_number or config.TWILIO_FROM_NUMBER or self.from_number
 
         if not account_sid or not auth_token:
             logger.error("[TWILIO][FATAL] Twilio credentials missing (TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN).")
@@ -40,13 +44,11 @@ class TwilioService:
             }
 
         api_url = f"https://api.twilio.com/2010-04-01/Accounts/{account_sid}/Calls.json"
-        candidates = [config.PUBLIC_BASE_URL, config.TWILIO_WEBHOOK_BASE_URL]
-        public_url = next((u for u in candidates if u and "localhost" not in u and "127.0.0.1" not in u), None)
-        base_url = (public_url or config.TWILIO_WEBHOOK_BASE_URL or config.PUBLIC_BASE_URL or "http://localhost:8000").rstrip("/")
-        target_url = twiml_url or f"{base_url}/api/twilio/voice"
+        resolved_base = (base_url or get_hosted_url(request=request)).rstrip("/")
+        target_url = twiml_url or (f"{resolved_base}/api/twilio/voice" if resolved_base else "/api/twilio/voice")
 
         if "localhost" in target_url or "127.0.0.1" in target_url:
-            logger.warning(f"[TWILIO][WARNING] Twilio webhook URL '{target_url}' is set to localhost. Twilio cloud servers cannot reach localhost! Set PUBLIC_BASE_URL in .env to your devtunnels/ngrok URL.")
+            logger.warning(f"[TWILIO][WARNING] Twilio webhook URL '{target_url}' is set to localhost. Twilio cloud servers cannot reach localhost! Set HOSTED_URL/PUBLIC_BASE_URL in .env to your devtunnels/hosted URL.")
 
         logger.info(f"[TWILIO] Making outbound call to {to_number} from {caller_id} via Twilio REST API (Webhook: {target_url})")
 
@@ -102,14 +104,17 @@ class TwilioService:
                 "error": str(e),
             }
 
-    def generate_twiml(self, websocket_url: Optional[str] = None) -> str:
+    def generate_twiml(self, websocket_url: Optional[str] = None, request: Optional[Any] = None) -> str:
         """Generates TwiML XML payload to connect call audio to Pipecat WebSocket stream."""
         if not websocket_url:
-            base_url = (config.TWILIO_WEBHOOK_BASE_URL or config.PUBLIC_BASE_URL or "http://localhost:8000").rstrip("/")
-            is_local = "localhost" in base_url or "127.0.0.1" in base_url
-            ws_scheme = "ws" if is_local else "wss"
-            clean_host = base_url.replace("wss://", "").replace("ws://", "").replace("https://", "").replace("http://", "").rstrip("/")
-            websocket_url = f"{ws_scheme}://{clean_host}/api/twilio/media-stream"
+            base_url = get_hosted_url(request=request).rstrip("/")
+            if base_url:
+                is_local = "localhost" in base_url or "127.0.0.1" in base_url
+                ws_scheme = "ws" if is_local else "wss"
+                clean_host = base_url.replace("wss://", "").replace("ws://", "").replace("https://", "").replace("http://", "").rstrip("/")
+                websocket_url = f"{ws_scheme}://{clean_host}/api/twilio/media-stream"
+            else:
+                websocket_url = "/api/twilio/media-stream"
 
         return f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>

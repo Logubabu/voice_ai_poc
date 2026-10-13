@@ -36,10 +36,14 @@ class TwilioTelephonyProvider(BaseTelephonyProvider):
     async def initiate_outbound_call(self, to_number: str, **kwargs) -> Dict[str, Any]:
         from_number = kwargs.get("from_number")
         twiml_url = kwargs.get("twiml_url")
+        request = kwargs.get("request")
+        base_url = kwargs.get("base_url")
         return await self.service.make_outbound_call(
             to_number=to_number,
             from_number=from_number,
             twiml_url=twiml_url,
+            request=request,
+            base_url=base_url,
         )
 
     def get_status(self) -> Dict[str, Any]:
@@ -47,7 +51,7 @@ class TwilioTelephonyProvider(BaseTelephonyProvider):
             "provider": "twilio",
             "account_sid_configured": bool(config.TWILIO_ACCOUNT_SID),
             "auth_token_configured": bool(config.TWILIO_AUTH_TOKEN),
-            "phone_number": config.TWILIO_PHONE_NUMBER or config.TWILIO_FROM_NUMBER,
+            "phone_number": config.TWILIO_FROM_NUMBER,
             "webhook_url": config.TWILIO_WEBHOOK_BASE_URL or config.PUBLIC_BASE_URL,
             "signature_validation": config.TWILIO_VALIDATE_SIGNATURE,
         }

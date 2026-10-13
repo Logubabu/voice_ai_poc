@@ -49,8 +49,7 @@ export interface SearchTestResponse {
   results: SearchResultItem[];
   message?: string;
 }
-
-const API_BASE = (import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000').replace(/\/$/, '');
+import { BACKEND_URL as API_BASE } from './apiConfig';
 
 export const kbApiService = {
   async listKnowledgeBases(tenantId: string = 'default_tenant'): Promise<KnowledgeBase[]> {

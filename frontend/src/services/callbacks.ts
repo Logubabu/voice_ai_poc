@@ -55,8 +55,7 @@ export interface RescheduleCallbackPayload {
   callback_reason?: string;
   priority?: string;
 }
-
-const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000';
+import { BACKEND_URL } from './apiConfig';
 
 function normalizeCallbackItem(item: any): CallbackItem {
   return {

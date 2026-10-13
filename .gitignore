@@ -28,7 +28,12 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
+.env
+.env.local
+.env.*.local
 *.env
+!.env.example
+!*/.env.example
 
 # Virtual environment
 venv/

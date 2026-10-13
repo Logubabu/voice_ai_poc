@@ -39,7 +39,7 @@ class Config:
     LLM_API_KEY: str = os.getenv("LLM_API_KEY", "") or os.getenv("GEMINI_API_KEY", "") or os.getenv("GROQ_API_KEY", "")
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
     GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")
-    LLM_MODEL: str = os.getenv("LLM_MODEL", "gemini-3.5-flash-lite")
+    LLM_MODEL: str = os.getenv("LLM_MODEL", "gemini-3.5-flash")
 
     TTS_PROVIDER: str = os.getenv("TTS_PROVIDER", "elevenlabs").lower()
     TTS_API_KEY: str = os.getenv("TTS_API_KEY", "") or os.getenv("ELEVENLABS_API_KEY", "")
@@ -54,6 +54,8 @@ class Config:
     AUDIO_PROCESSOR: str = os.getenv("AUDIO_PROCESSOR", "passthrough")
     FREESWITCH_ENABLED: bool = os.getenv("FREESWITCH_ENABLED", "true").lower() in ("true", "1", "yes")
     FREESWITCH_HOST: str = os.getenv("FREESWITCH_HOST", "127.0.0.1:8021")
+    FREESWITCH_ESL_PORT: int = _safe_int(os.getenv("FREESWITCH_ESL_PORT"), 8021)
+    FREESWITCH_ESL_PASSWORD: str = os.getenv("FREESWITCH_ESL_PASSWORD", "ClueCon")
     TOOL_CALLING_ENABLED: bool = os.getenv("TOOL_CALLING_ENABLED", "true").lower() in ("true", "1", "yes")
     WEBCALL_TOOL_CALLING_ENABLED: bool = os.getenv("WEBCALL_TOOL_CALLING_ENABLED", os.getenv("TOOL_CALLING_ENABLED", "true")).lower() in ("true", "1", "yes")
     WEBCALL_WEB_SEARCH_ENABLED: bool = os.getenv("WEBCALL_WEB_SEARCH_ENABLED", os.getenv("WEB_SEARCH_ENABLED", "true")).lower() in ("true", "1", "yes")
@@ -74,7 +76,7 @@ class Config:
     BRAVE_API_KEY: str = os.getenv("BRAVE_API_KEY", "")
     SERPER_API_KEY: str = os.getenv("SERPER_API_KEY", "")
     BING_API_KEY: str = os.getenv("BING_API_KEY", "")
-    SEARXNG_URL: str = os.getenv("SEARXNG_URL", "http://localhost:8000")
+    SEARXNG_URL: str = os.getenv("SEARXNG_URL", "")
     WEB_SEARCH_ENABLED: bool = os.getenv("WEB_SEARCH_ENABLED", "true").lower() in ("true", "1", "yes")
     WEB_SEARCH_MAX_RESULTS: int = _safe_int(os.getenv("WEB_SEARCH_MAX_RESULTS"), 5)
     WEB_SEARCH_TIMEOUT: float = _safe_float(os.getenv("WEB_SEARCH_TIMEOUT"), 5.0)
@@ -82,20 +84,23 @@ class Config:
     WEB_FETCH_TIMEOUT: float = _safe_float(os.getenv("WEB_FETCH_TIMEOUT"), 10.0)
     WEB_FETCH_MAX_BYTES: int = _safe_int(os.getenv("WEB_FETCH_MAX_BYTES"), 2000000)
 
-    # Twilio REST API Configuration
+    # Hosted Base URL & Twilio Integration
+    HOSTED_URL: str = os.getenv("HOSTED_URL", "") or os.getenv("PUBLIC_BASE_URL", "") or os.getenv("TWILIO_WEBHOOK_BASE_URL", "")
     TWILIO_ACCOUNT_SID: str = os.getenv("TWILIO_ACCOUNT_SID", "")
     TWILIO_AUTH_TOKEN: str = os.getenv("TWILIO_AUTH_TOKEN", "")
     TWILIO_FROM_NUMBER: str = os.getenv("TWILIO_FROM_NUMBER", "")
-    TWILIO_PHONE_NUMBER: str = os.getenv("TWILIO_PHONE_NUMBER", "") or os.getenv("TWILIO_FROM_NUMBER", "+17372508034")
-    PUBLIC_BASE_URL: str = os.getenv("PUBLIC_BASE_URL", "")
-    TWILIO_WEBHOOK_BASE_URL: str = os.getenv("TWILIO_WEBHOOK_BASE_URL", "") or os.getenv("PUBLIC_BASE_URL", "")
+    PUBLIC_BASE_URL: str = os.getenv("PUBLIC_BASE_URL", "") or os.getenv("HOSTED_URL", "")
+    TWILIO_WEBHOOK_BASE_URL: str = os.getenv("TWILIO_WEBHOOK_BASE_URL", "") or os.getenv("HOSTED_URL", "") or os.getenv("PUBLIC_BASE_URL", "")
     TWILIO_VALIDATE_SIGNATURE: bool = os.getenv("TWILIO_VALIDATE_SIGNATURE", "false").lower() in ("true", "1", "yes")
 
+    _raw_origins = os.getenv("ALLOWED_ORIGINS", "*")
     ALLOWED_ORIGINS: List[str] = [
         origin.strip()
-        for origin in os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000,http://127.0.0.1:3000,http://localhost:8000").split(",")
-        if origin.strip() and origin.strip() != "*"
+        for origin in _raw_origins.split(",")
+        if origin.strip()
     ]
+    CORS_ALLOW_ALL: bool = "*" in ALLOWED_ORIGINS or os.getenv("CORS_ALLOW_ALL", "true").lower() in ("true", "1", "yes")
+    CORS_ORIGIN_REGEX: str = os.getenv("CORS_ORIGIN_REGEX", r".*" if CORS_ALLOW_ALL else "")
 
     SYSTEM_PROMPT: str = os.getenv(
         "SYSTEM_PROMPT",
@@ -142,3 +147,28 @@ class Config:
 
 
 config = Config()
+
+
+def get_hosted_url(request: Any = None) -> str:
+    """Dynamically resolves the hosted base URL without hardcoded localhost defaults.
+
+    Priority:
+    1. HOSTED_URL / PUBLIC_BASE_URL / TWILIO_WEBHOOK_BASE_URL from config (if non-empty and not localhost).
+    2. Incoming Request headers (x-forwarded-proto + x-forwarded-host or host) when available.
+    3. Any non-empty configured fallback.
+    """
+    for candidate in [config.HOSTED_URL, config.PUBLIC_BASE_URL, config.TWILIO_WEBHOOK_BASE_URL]:
+        if candidate and "localhost" not in candidate and "127.0.0.1" not in candidate:
+            return candidate.rstrip("/")
+
+    if request:
+        try:
+            proto = request.headers.get("x-forwarded-proto") or getattr(request.url, "scheme", "https")
+            host = request.headers.get("x-forwarded-host") or request.headers.get("host") or getattr(request.url, "netloc", "")
+            host = host.split(",")[0].strip()
+            if host:
+                return f"{proto}://{host}".rstrip("/")
+        except Exception:
+            pass
+
+    return (config.HOSTED_URL or config.PUBLIC_BASE_URL or config.TWILIO_WEBHOOK_BASE_URL or "").rstrip("/")

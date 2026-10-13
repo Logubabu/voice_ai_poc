@@ -33,7 +33,7 @@ def create_search_provider() -> SearchProvider:
     ).lower().strip()
 
     api_key = getattr(config, "WEB_SEARCH_API_KEY", "") or getattr(config, "SEARCH_API_KEY", "")
-    searxng_url = getattr(config, "SEARXNG_URL", "http://localhost:8000")
+    searxng_url = getattr(config, "SEARXNG_URL", "") or os.getenv("SEARXNG_URL", "")
 
     if provider_type == "tavily":
         tavily_key = api_key or getattr(config, "TAVILY_API_KEY", "")

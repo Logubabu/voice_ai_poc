@@ -84,11 +84,11 @@ COPY docker/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 # 8021      - FreeSWITCH ESL (Event Socket Library)
 # 8086      - FreeSWITCH Audio Stream
 # 50010-50030/udp - WebRTC Audio RTP/RTCP
-EXPOSE 5173 8000 5060/udp 5060/tcp 8021 8086 50010-50030/udp
+EXPOSE 8080 5173 8000 5060/udp 5060/tcp 8021 8086 50010-50030/udp
 
-# Container healthcheck against backend /health endpoint
+# Container healthcheck against /health endpoint
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-    CMD curl -f http://localhost:8000/health || exit 1
+    CMD curl -f http://localhost:8080/health || curl -f http://localhost:8000/health || exit 1
 
 # Start Supervisord to manage FreeSWITCH, Backend, and Nginx processes
 CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]

@@ -17,7 +17,7 @@ Set environment variables in `backend/.env`:
 ```env
 TWILIO_ACCOUNT_SID=account_id
 TWILIO_AUTH_TOKEN=auth_token
-TWILIO_PHONE_NUMBER=twilio_phone_number
+TWILIO_FROM_NUMBER=twilio_from_number
 TWILIO_WEBHOOK_BASE_URL=https://your-public-domain.com
 TWILIO_VALIDATE_SIGNATURE=false
 ```

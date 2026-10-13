@@ -51,22 +51,7 @@ export interface FreeSwitchStatus {
   currently_running_noise_cancellation: string;
   recent_commands: Array<{ timestamp: string; command: string; response: string; status: string }>;
 }
-
-const getBackendUrl = (): string => {
-  if (import.meta.env.VITE_BACKEND_URL) {
-    return import.meta.env.VITE_BACKEND_URL;
-  }
-  if (typeof window !== 'undefined') {
-    // When served via Nginx (port 5173), API calls are reverse-proxied at /api
-    if (window.location.port === '5173') {
-      return '';
-    }
-    return `${window.location.protocol}//${window.location.hostname}:8000`;
-  }
-  return 'http://localhost:8000';
-};
-
-const BACKEND_URL = getBackendUrl();
+import { BACKEND_URL } from './apiConfig';
 
 export class VoiceCallService {
   private sessionId: string | null = null;
@@ -319,8 +304,10 @@ export class VoiceCallService {
           }
           this.onStateUpdate?.(data.state as CallState);
         } else if (data.type === 'error') {
-          console.error('[DATACHANNEL][ERROR]', data.message);
-          this.onStateUpdate?.('error');
+          if (data.message && data.message !== 'undefined') {
+            console.error('[DATACHANNEL][ERROR]', data.message);
+            this.onStateUpdate?.('error');
+          }
         } else if (data.type === 'transcript' && data.text) {
           this.onTranscriptUpdate?.({
             id: `msg-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,

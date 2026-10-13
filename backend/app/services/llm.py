@@ -22,8 +22,8 @@ def create_llm_service(cfg: Config, is_webcall: bool = True, system_instruction:
             from app.tools.router import tool_router
 
             # Map deprecated or unavailable model names to active Gemini model
-            SUPPORTED_MODELS = {"gemini-3.5-flash-lite", "gemini-3.8-flash"}
-            gemini_model = model if model in SUPPORTED_MODELS else "gemini-3.5-flash-lite"
+            SUPPORTED_MODELS = {"gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.8-flash"}
+            gemini_model = model if model in SUPPORTED_MODELS else "gemini-3.5-flash"
             if gemini_model != model:
                 logger.warning(f"[LLM] Model '{model}' is deprecated or unavailable. Falling back to active model '{gemini_model}'.")
 

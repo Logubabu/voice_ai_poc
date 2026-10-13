@@ -26,12 +26,19 @@ from app.routers.callbacks import router as callbacks_router
 from app.callbacks.scheduler import callback_scheduler_worker
 
 # Configure CORS
+cors_allow_all = getattr(config, "CORS_ALLOW_ALL", True)
+cors_origins = ["*"] if cors_allow_all else config.ALLOWED_ORIGINS
+cors_origin_regex = (getattr(config, "CORS_ORIGIN_REGEX", None) or r".*") if cors_allow_all else None
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=config.ALLOWED_ORIGINS,
+    allow_origins=cors_origins,
+    allow_origin_regex=cors_origin_regex,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
+    max_age=86400,
 )
 
 # Include REST API routers
@@ -215,33 +222,13 @@ from app.telephony.provider import get_telephony_provider
 @app.api_route("/api/telephony/twilio/twiml", methods=["GET", "POST", "HEAD"])
 async def get_twilio_voice_twiml(request: Request):
     """Twilio Inbound Call Webhook. Returns TwiML XML payload to connect call audio to Pipecat WebSocket stream."""
-    twiml_url_override = None
-    try:
-        public_url = config.TWILIO_WEBHOOK_BASE_URL or config.PUBLIC_BASE_URL
-        if public_url and "localhost" not in public_url and "127.0.0.1" not in public_url:
-            clean_host = public_url.replace("wss://", "").replace("ws://", "").replace("https://", "").replace("http://", "").rstrip("/")
-            twiml_url_override = f"wss://{clean_host}/api/twilio/media-stream"
-        else:
-            req_host = request.headers.get("x-forwarded-host") or request.headers.get("host") or request.url.netloc or ""
-            req_host = req_host.split(",")[0].strip()
-            is_local = "localhost" in req_host or "127.0.0.1" in req_host
-            ws_scheme = "ws" if is_local else "wss"
-            twiml_url_override = f"{ws_scheme}://{req_host}/api/twilio/media-stream"
-            if is_local:
-                logger.warning(
-                    f"[TWILIO-WEBHOOK][WARNING] Media stream URL is pointing to localhost ('{twiml_url_override}'). "
-                    "Twilio cloud servers cannot reach localhost! Set PUBLIC_BASE_URL in .env to your public ngrok/devtunnels URL."
-                )
-    except Exception as e:
-        logger.warning(f"[TWILIO-WEBHOOK] Could not parse host from request headers: {e}")
-
-    twiml_xml = twilio_service.generate_twiml(websocket_url=twiml_url_override)
+    twiml_xml = twilio_service.generate_twiml(request=request)
     return Response(content=twiml_xml, media_type="application/xml")
 
 
 @app.post("/api/twilio/call")
 @app.post("/api/telephony/twilio/outbound-call")
-async def twilio_outbound_call(req: TwilioCallRequest):
+async def twilio_outbound_call(req: TwilioCallRequest, request: Request):
     """Initiates an outbound phone call via Twilio REST API."""
     phone_number = req.phone_number.strip()
     if not phone_number or len(phone_number) < 5:
@@ -252,6 +239,7 @@ async def twilio_outbound_call(req: TwilioCallRequest):
         to_number=phone_number,
         from_number=req.from_number,
         twiml_url=req.twiml_url,
+        request=request,
     )
     if not res.get("success"):
         raise HTTPException(status_code=500, detail=res.get("error", "Twilio call creation failed"))
@@ -266,12 +254,16 @@ async def twilio_outbound_call(req: TwilioCallRequest):
 
 
 @app.post("/api/telephony/outbound-call")
-async def make_outbound_phone_call(req: OutboundCallRequest):
+async def make_outbound_phone_call(req: OutboundCallRequest, request: Request):
     """Initiates an outbound web/telephony call to a phone number via Twilio or FreeSWITCH SIP gateway."""
     logger.info(f"[OUTBOUND-CALL] Dialing phone number '{req.phone_number}' via gateway '{req.gateway}'")
     provider_name = "twilio" if req.gateway.lower() == "twilio" else "freeswitch"
     provider = get_telephony_provider(provider_name)
-    res = await provider.initiate_outbound_call(to_number=req.phone_number, gateway=req.gateway)
+    res = await provider.initiate_outbound_call(
+        to_number=req.phone_number,
+        gateway=req.gateway,
+        request=request,
+    )
     return {
         "status": "initiated",
         "provider": provider_name,

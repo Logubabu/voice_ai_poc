@@ -1,5 +1,7 @@
+import os
 import time
 from typing import Dict, Any, List
+from app.config import config
 from app.utils.logging import logger
 from app.services.audio_processor import audio_processor_factory
 
@@ -9,10 +11,16 @@ class FreeSwitchESLService:
     Handles communication, event dispatching, and toolcall operations for FreeSWITCH PBX integration.
     """
 
-    def __init__(self, host: str = "127.0.0.1", port: int = 8021, password: str = "ClueCon"):
-        self.host = host
-        self.port = port
-        self.password = password
+    def __init__(self, host: str = "", port: int = 0, password: str = ""):
+        raw_host = host or getattr(config, "FREESWITCH_HOST", "") or os.getenv("FREESWITCH_HOST", "127.0.0.1:8021")
+        if ":" in raw_host:
+            h, p = raw_host.split(":", 1)
+            self.host = h
+            self.port = port or int(p)
+        else:
+            self.host = raw_host
+            self.port = port or getattr(config, "FREESWITCH_ESL_PORT", 8021) or int(os.getenv("FREESWITCH_ESL_PORT", "8021"))
+        self.password = password or getattr(config, "FREESWITCH_ESL_PASSWORD", "") or os.getenv("FREESWITCH_ESL_PASSWORD", "ClueCon")
         self.connected = True  # Connected ESL session / protocol connection state
         self.active_channels: Dict[str, Dict[str, Any]] = {
             "channel-webcall-01": {

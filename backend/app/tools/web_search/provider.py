@@ -21,7 +21,7 @@ def create_search_provider(cfg: Optional[Any] = None) -> SearchProvider:
     ).lower().strip()
 
     api_key = getattr(app_cfg, "WEB_SEARCH_API_KEY", "") or getattr(app_cfg, "SEARCH_API_KEY", "")
-    searxng_url = getattr(app_cfg, "SEARXNG_URL", "http://localhost:8000")
+    searxng_url = getattr(app_cfg, "SEARXNG_URL", "") or os.getenv("SEARXNG_URL", "")
 
     if provider_type == "tavily":
         tavily_key = api_key or getattr(app_cfg, "TAVILY_API_KEY", "")

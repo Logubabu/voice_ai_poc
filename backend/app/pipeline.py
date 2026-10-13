@@ -146,9 +146,11 @@ class DiagnosticEventProcessor(FrameProcessor):
 
         elif isinstance(frame, ErrorFrame):
             processor = getattr(frame, "processor", "pipeline")
-            error_msg = getattr(frame, "error", str(frame))
+            error_val = getattr(frame, "error", None) or getattr(frame, "message", None) or str(frame)
+            error_msg = getattr(error_val, "message", str(error_val)) if hasattr(error_val, "message") else str(error_val)
             logger.error(f"[CALL] call_id={self.session_id} [PIPELINE][ERROR] [{processor}] {error_msg}")
-            self._send_app_message({"type": "error", "message": f"[{processor}] {error_msg}"})
+            if error_msg and error_msg not in ("None", "undefined"):
+                self._send_app_message({"type": "error", "message": f"[{processor}] {error_msg}"})
 
         await self.push_frame(frame, direction)
 
@@ -161,6 +163,7 @@ class TTSMonitor(FrameProcessor):
         self.connection = connection
         self.session_id = session_id
         self.tts_frame_count = 0
+        self.interrupted = False
 
     def _send_app_message(self, data: dict):
         if self.connection and hasattr(self.connection, "send_app_message"):
@@ -172,9 +175,18 @@ class TTSMonitor(FrameProcessor):
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
 
-        if isinstance(frame, TTSStartedFrame):
+        if isinstance(frame, UserStartedSpeakingFrame) or type(frame).__name__ in (
+            "UserStartedSpeakingFrame",
+            "UserInterruptionFrame",
+            "InterruptionFrame",
+            "CancelFrame",
+        ):
+            self.interrupted = True
+
+        elif isinstance(frame, TTSStartedFrame):
             logger.info(f"[CALL] call_id={self.session_id} [TTS] generating_audio")
             self.tts_frame_count = 0
+            self.interrupted = False
             self._send_app_message({"type": "state", "state": "speaking"})
 
         elif isinstance(frame, TTSAudioRawFrame):
@@ -186,9 +198,13 @@ class TTSMonitor(FrameProcessor):
 
         elif isinstance(frame, TTSStoppedFrame):
             logger.info(f"[CALL] call_id={self.session_id} [TTS] audio_stream_finished frames={self.tts_frame_count}")
+            # If the user interrupted before TTS output, zero frames is expected behavior, not an error
             if self.tts_frame_count == 0:
-                logger.error(f"[CALL] call_id={self.session_id} [TTS][FATAL] ZERO audio frames produced")
-                self._send_app_message({"type": "error", "message": "TTS produced no audio"})
+                if self.interrupted:
+                    logger.info(f"[CALL] call_id={self.session_id} [TTS] turn cancelled by user barge-in")
+                else:
+                    logger.warning(f"[CALL] call_id={self.session_id} [TTS] zero audio frames produced (empty turn)")
+            self.interrupted = False
             self._send_app_message({"type": "state", "state": "listening"})
 
         await self.push_frame(frame, direction)

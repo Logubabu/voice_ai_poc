@@ -1,3 +1,4 @@
+import os
 import time
 from typing import List
 import httpx
@@ -8,8 +9,9 @@ from app.services.search.provider import SearchProvider, SearchResult
 class SearXNGProvider(SearchProvider):
     """SearXNG self-hosted open-source search engine provider implementation."""
 
-    def __init__(self, base_url: str = "http://localhost:8000"):
-        self.base_url = base_url.rstrip("/")
+    def __init__(self, base_url: str = ""):
+        resolved_url = base_url or os.getenv("SEARXNG_URL", "")
+        self.base_url = resolved_url.rstrip("/")
 
     async def search(
         self,

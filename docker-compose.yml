@@ -43,13 +43,13 @@ services:
       - path: ./backend/.env
         required: false
     environment:
-      - SEARXNG_URL=http://searxng:8080
-      - FREESWITCH_HOST=127.0.0.1:8021
-      - QDRANT_URL=http://qdrant:6333
-      - VECTOR_DB=qdrant
-      - RTC_PORT_START=50010
-      - RTC_PORT_END=50030
-      - WEBRTC_HOST=192.168.1.4
+      - SEARXNG_URL=${SEARXNG_URL:-http://searxng:8080}
+      - FREESWITCH_HOST=${FREESWITCH_HOST:-127.0.0.1:8021}
+      - QDRANT_URL=${QDRANT_URL:-http://qdrant:6333}
+      - VECTOR_DB=${VECTOR_DB:-qdrant}
+      - RTC_PORT_START=${RTC_PORT_START:-50010}
+      - RTC_PORT_END=${RTC_PORT_END:-50030}
+      - WEBRTC_HOST=${WEBRTC_HOST:-}
     volumes:
       - ./data:/app/backend/data
     depends_on:
