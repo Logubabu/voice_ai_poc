@@ -21,7 +21,7 @@ jobs:
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::291200967799:role/GitHubActionsVoiceAI
-          aws-region: ${{ env.AWS_REGION }}
+          aws-region: ap-southeast-2
           audience: sts.amazonaws.com
 
       - name: Login to Amazon ECR
