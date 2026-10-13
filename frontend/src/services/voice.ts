@@ -265,6 +265,7 @@ export class VoiceCallService {
 
     // 5. Send SDP offer with candidates to backend
     console.log('[WEBRTC] Sending offer to backend');
+    const clientHost = typeof window !== 'undefined' ? window.location.hostname : undefined;
     const response = await fetch(`${BACKEND_URL}/api/webrtc/offer`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -272,6 +273,7 @@ export class VoiceCallService {
         sdp: sdpToSend,
         type: pc.localDescription?.type || offer.type,
         session_id: sessionId,
+        client_host: clientHost,
       }),
     });
 
@@ -290,11 +292,16 @@ export class VoiceCallService {
     const answerHasAudio = answer.sdp?.includes('m=audio') ?? false;
     console.log(`[WEBRTC] Answer contains audio: ${answerHasAudio}`);
 
-    await pc.setRemoteDescription(new RTCSessionDescription({
-      type: answer.type,
-      sdp: answer.sdp,
-    }));
-    console.log('[WEBRTC] Remote description set');
+    try {
+      await pc.setRemoteDescription(new RTCSessionDescription({
+        type: answer.type,
+        sdp: answer.sdp,
+      }));
+      console.log('[WEBRTC] Remote description set successfully');
+    } catch (sdpErr) {
+      console.error('[WEBRTC][ERROR] Failed to setRemoteDescription:', sdpErr, '\nSDP was:\n', answer.sdp);
+      throw sdpErr;
+    }
   }
 
   private setupDataChannel(channel: RTCDataChannel) {

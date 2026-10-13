@@ -61,8 +61,8 @@ class Config:
     MAX_WEB_SEARCHES_PER_SESSION: int = _safe_int(os.getenv("MAX_WEB_SEARCHES_PER_SESSION"), 20)
 
     # WebRTC Network & Port Range Configuration (Docker & NAT traversal)
-    RTC_PORT_START: int = _safe_int(os.getenv("RTC_PORT_START"), 50000)
-    RTC_PORT_END: int = _safe_int(os.getenv("RTC_PORT_END"), 50020)
+    RTC_PORT_START: int = _safe_int(os.getenv("RTC_PORT_START"), 50010)
+    RTC_PORT_END: int = _safe_int(os.getenv("RTC_PORT_END"), 50030)
     WEBRTC_HOST: str = os.getenv("WEBRTC_HOST", "")
     ICE_SERVERS: str = os.getenv("ICE_SERVERS", "stun:stun.l.google.com:19302,stun:stun1.l.google.com:19302,stun:stun2.l.google.com:19302")
 

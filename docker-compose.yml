@@ -36,7 +36,7 @@ services:
       - "5060:5060/tcp"   # FreeSWITCH SIP TCP
       - "8021:8021"       # FreeSWITCH ESL
       - "8086:8086"       # FreeSWITCH Audio Stream
-      - "50000-50020:50000-50020/udp" # WebRTC RTP/RTCP Audio Streams
+      - "50010-50030:50010-50030/udp" # WebRTC RTP/RTCP Audio Streams
     env_file:
       - path: .env
         required: false
@@ -47,9 +47,9 @@ services:
       - FREESWITCH_HOST=127.0.0.1:8021
       - QDRANT_URL=http://qdrant:6333
       - VECTOR_DB=qdrant
-      - RTC_PORT_START=50000
-      - RTC_PORT_END=50020
-      - WEBRTC_HOST=127.0.0.1
+      - RTC_PORT_START=50010
+      - RTC_PORT_END=50030
+      - WEBRTC_HOST=192.168.1.4
     volumes:
       - ./data:/app/backend/data
     depends_on:
