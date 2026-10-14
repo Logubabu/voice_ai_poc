@@ -50,6 +50,26 @@ jobs:
             --task-definition $TASK_DEFINITION \
             --query taskDefinition > task-definition.json
 
+      - name: Add SYS_NICE and SYS_RESOURCE capabilities to task definition
+        run: |
+          python -c '
+          import json
+          with open("task-definition.json") as f:
+              td = json.load(f)
+          for c in td.get("containerDefinitions", []):
+              if c.get("name") == "${{ env.CONTAINER_NAME }}":
+                  lp = c.setdefault("linuxParameters", {})
+                  caps = lp.setdefault("capabilities", {})
+                  add_list = caps.setdefault("add", [])
+                  for cap in ["SYS_NICE", "SYS_RESOURCE"]:
+                      if cap not in add_list:
+                          add_list.append(cap)
+          for key in ["taskDefinitionArn", "revision", "status", "requiresAttributes", "compatibilities", "registeredAt", "registeredBy"]:
+              td.pop(key, None)
+          with open("task-definition.json", "w") as f:
+              json.dump(td, f, indent=2)
+          '
+
       - name: Inject new image into task definition
         id: task-def
         uses: aws-actions/amazon-ecs-render-task-definition@v1
@@ -65,3 +85,11 @@ jobs:
           service: ${{ env.ECS_SERVICE }}
           cluster: ${{ env.ECS_CLUSTER }}
           wait-for-service-stability: true
+
+      - name: Force new deployment on ECS service
+        run: |
+          aws ecs update-service \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --service ${{ env.ECS_SERVICE }} \
+            --force-new-deployment \
+            --region ${{ env.AWS_REGION }}

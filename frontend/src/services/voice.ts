@@ -59,6 +59,7 @@ export class VoiceCallService {
   private mediaStream: MediaStream | null = null;
   private peerConnection: RTCPeerConnection | null = null;
   private remoteAudio: HTMLAudioElement | null = null;
+  private pendingCandidates: Array<{ candidate: string; sdp_mid?: string | null; sdp_mline_index?: number | null }> = [];
 
   public onStateUpdate?: (state: CallState) => void;
   public onTranscriptUpdate?: (item: TranscriptItem) => void;
@@ -106,9 +107,28 @@ export class VoiceCallService {
    * Connects local browser WebRTC peer connection with backend via SDP offer/answer.
    */
   async connectWebRTC(sessionId: string): Promise<void> {
+    this.pendingCandidates = [];
+
+    // 0. Fetch dynamic ICE servers (STUN + TURN) from backend
+    console.log('[WEBRTC] Fetching dynamic ICE servers (STUN + TURN)...');
+    let iceServers: RTCIceServer[] = [{ urls: 'stun:stun.l.google.com:19302' }];
+    try {
+      const iceRes = await fetch(`${BACKEND_URL}/api/webrtc/ice-servers`);
+      if (iceRes.ok) {
+        const iceData = await iceRes.json();
+        if (Array.isArray(iceData.ice_servers) && iceData.ice_servers.length > 0) {
+          iceServers = iceData.ice_servers;
+          console.log(`[WEBRTC] Configured ${iceServers.length} ICE server(s) from backend (STUN/TURN)`);
+        }
+      }
+    } catch (err) {
+      console.warn('[WEBRTC] Could not load ICE servers from backend, using fallback STUN:', err);
+    }
+
     console.log('[WEBRTC] Creating peer connection');
     const pc = new RTCPeerConnection({
-      iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+      iceServers,
+      iceTransportPolicy: 'all',
     });
     this.peerConnection = pc;
 
@@ -118,6 +138,13 @@ export class VoiceCallService {
       if (pc.connectionState === 'connected') {
         this.onStateUpdate?.('connected');
         setTimeout(() => this.onStateUpdate?.('listening'), 500);
+        pc.getStats().then((stats) => {
+          stats.forEach((report) => {
+            if (report.type === 'candidate-pair' && report.state === 'succeeded') {
+              console.log('[WEBRTC] Active ICE candidate pair succeeded:', report);
+            }
+          });
+        }).catch(() => {});
       } else if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
         this.onStateUpdate?.('disconnected');
       }
@@ -133,7 +160,13 @@ export class VoiceCallService {
 
     pc.onicecandidate = async (event) => {
       if (event.candidate) {
-        console.log('[WEBRTC] Discovered ICE candidate:', event.candidate.candidate);
+        const cand = event.candidate;
+        console.log(`[WEBRTC] Discovered ICE candidate (${cand.type || 'unknown'}):`, cand.candidate);
+        const item = {
+          candidate: cand.candidate,
+          sdp_mid: cand.sdpMid,
+          sdp_mline_index: cand.sdpMLineIndex,
+        };
         if (this.pcId && pc.connectionState !== 'connected') {
           try {
             await fetch(`${BACKEND_URL}/api/webrtc/patch`, {
@@ -141,16 +174,14 @@ export class VoiceCallService {
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
                 pc_id: this.pcId,
-                candidates: [{
-                  candidate: event.candidate.candidate,
-                  sdp_mid: event.candidate.sdpMid,
-                  sdp_mline_index: event.candidate.sdpMLineIndex,
-                }],
+                candidates: [item],
               }),
             });
           } catch (e) {
             // Trickle candidate send is non-blocking
           }
+        } else {
+          this.pendingCandidates.push(item);
         }
       }
     };
@@ -272,6 +303,19 @@ export class VoiceCallService {
     console.log('[WEBRTC] Answer received');
     if (answer.pc_id) {
       this.pcId = answer.pc_id;
+      // Flush buffered trickle candidates
+      if (this.pendingCandidates.length > 0) {
+        const toSend = [...this.pendingCandidates];
+        this.pendingCandidates = [];
+        fetch(`${BACKEND_URL}/api/webrtc/patch`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            pc_id: this.pcId,
+            candidates: toSend,
+          }),
+        }).catch(() => {});
+      }
     }
 
     const answerHasAudio = answer.sdp?.includes('m=audio') ?? false;

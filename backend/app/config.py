@@ -66,7 +66,11 @@ class Config:
     RTC_PORT_START: int = _safe_int(os.getenv("RTC_PORT_START"), 50010)
     RTC_PORT_END: int = _safe_int(os.getenv("RTC_PORT_END"), 50030)
     WEBRTC_HOST: str = os.getenv("WEBRTC_HOST", "")
+    AUTO_DISCOVER_PUBLIC_IP: bool = os.getenv("AUTO_DISCOVER_PUBLIC_IP", "true").lower() in ("true", "1", "yes")
     ICE_SERVERS: str = os.getenv("ICE_SERVERS", "stun:stun.l.google.com:19302,stun:stun1.l.google.com:19302,stun:stun2.l.google.com:19302")
+    TURN_SERVER_URL: str = os.getenv("TURN_SERVER_URL", os.getenv("TURN_URL", ""))
+    TURN_USERNAME: str = os.getenv("TURN_USERNAME", "")
+    TURN_PASSWORD: str = os.getenv("TURN_PASSWORD", os.getenv("TURN_CREDENTIAL", ""))
 
     # Web Search & Web Fetch Configuration
     SEARCH_PROVIDER: str = os.getenv("WEB_SEARCH_PROVIDER", os.getenv("SEARCH_PROVIDER", "duckduckgo")).lower()

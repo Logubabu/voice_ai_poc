@@ -71,6 +71,16 @@ async def warm_up_services():
     except Exception as e:
         logger.warning(f"[CONFIG] Pre-warming notice: {e}")
 
+    # Pre-warm WebRTC ICE servers (Twilio NTS TURN/STUN) & discover public IP
+    try:
+        from app.services.webrtc_service import webrtc_service
+        _, aiortc_servers = await webrtc_service.get_ice_servers()
+        webrtc_request_handler.update_ice_servers(aiortc_servers)
+        pub_ip = await webrtc_service.get_public_ip()
+        logger.info(f"[CONFIG] WebRTC pre-warm complete: {len(aiortc_servers)} ICE server(s) configured, public IP: {pub_ip or 'auto'}")
+    except Exception as e:
+        logger.warning(f"[CONFIG] WebRTC pre-warm notice: {e}")
+
     # Start background scheduled callback worker
     if getattr(config, "CALLBACK_WORKER_ENABLED", True):
         await callback_scheduler_worker.start()
@@ -87,8 +97,9 @@ async def shutdown_services():
 
 from pipecat.transports.smallwebrtc.request_handler import SmallWebRTCRequestHandler, SmallWebRTCRequest
 from pipecat.transports.smallwebrtc.connection import SmallWebRTCConnection, IceServer
+from app.services.webrtc_service import webrtc_service
 
-def _build_ice_servers():
+def _build_initial_ice_servers():
     ice_servers = []
     raw = getattr(config, "ICE_SERVERS", "") or "stun:stun.l.google.com:19302"
     for item in raw.split(","):
@@ -97,7 +108,7 @@ def _build_ice_servers():
             ice_servers.append(IceServer(urls=item))
     return ice_servers
 
-webrtc_request_handler = SmallWebRTCRequestHandler(ice_servers=_build_ice_servers())
+webrtc_request_handler = SmallWebRTCRequestHandler(ice_servers=_build_initial_ice_servers())
 
 
 class CandidateItem(BaseModel):
@@ -156,6 +167,14 @@ class TwilioCallRequest(BaseModel):
 async def health_check():
     """Health check endpoint."""
     return {"status": "ok"}
+
+
+@app.get("/api/webrtc/ice-servers")
+async def get_webrtc_ice_servers():
+    """Returns dynamic ICE servers (STUN + TURN) for browser WebRTC connection."""
+    client_servers, aiortc_servers = await webrtc_service.get_ice_servers()
+    webrtc_request_handler.update_ice_servers(aiortc_servers)
+    return {"ice_servers": client_servers}
 
 
 @app.get("/api/debug/providers")
@@ -357,61 +376,22 @@ async def webrtc_offer(req: OfferRequest):
             )
             logger.info(f"[WEBRTC] WebRTC session '{session_id}' connected successfully")
 
+        # Dynamically refresh ICE servers (STUN/TURN) before processing WebRTC offer
+        _, aiortc_servers = await webrtc_service.get_ice_servers()
+        webrtc_request_handler.update_ice_servers(aiortc_servers)
+
         answer = await webrtc_request_handler.handle_web_request(
             request=request,
             webrtc_connection_callback=on_connection,
         )
 
-        # Munge SDP answer candidates to support Docker container-to-host and NAT loopback
+        # Sanitize and munge SDP answer candidates for Docker, AWS ECS, and NAT traversal
         if answer and "sdp" in answer:
-            answer_sdp = answer["sdp"]
-
-            # Determine candidate IP addresses reachable from outside the container
-            target_ips = ["127.0.0.1"]
-
-            webrtc_host = config.WEBRTC_HOST.strip() if getattr(config, "WEBRTC_HOST", None) else ""
-            if webrtc_host and webrtc_host not in target_ips:
-                target_ips.append(webrtc_host)
-
-            if req.client_host and req.client_host not in ("localhost", "127.0.0.1") and req.client_host not in target_ips:
-                target_ips.append(req.client_host)
-
-            # Extract any host candidate IPs from incoming offer SDP
-            if req.sdp:
-                for o_line in req.sdp.splitlines():
-                    if o_line.startswith("a=candidate:") and " typ host" in o_line:
-                        o_parts = o_line.split(" ")
-                        if len(o_parts) >= 8:
-                            o_ip = o_parts[4]
-                            if o_ip and not o_ip.endswith(".local") and not o_ip.startswith("127.") and not o_ip.startswith("172.18.") and o_ip not in target_ips:
-                                target_ips.append(o_ip)
-
-            lines = answer_sdp.splitlines()
-            new_lines = []
-            cand_idx = 1
-            for line in lines:
-                if line.startswith("c=IN IP4 172.") or line.startswith("c=IN IP4 10."):
-                    new_lines.append("c=IN IP4 0.0.0.0")
-                    continue
-
-                if line.startswith("a=candidate:") and " typ host" in line:
-                    parts = line.split(" ")
-                    if len(parts) >= 8:
-                        orig_ip = parts[4]
-                        orig_port = parts[5]
-                        # RFC 8839 compliant foundation (short string <= 32 chars) and descending priorities
-                        new_lines.append(f"a=candidate:c{cand_idx} 1 udp 2130706431 {orig_ip} {orig_port} typ host")
-                        cand_idx += 1
-
-                        for tip in target_ips:
-                            if tip != orig_ip:
-                                prio = max(2130706431 - (cand_idx * 256), 1000)
-                                new_lines.append(f"a=candidate:c{cand_idx} 1 udp {prio} {tip} {orig_port} typ host")
-                                cand_idx += 1
-                        continue
-
-                new_lines.append(line)
-            answer["sdp"] = "\r\n".join(new_lines) + "\r\n"
+            answer["sdp"] = await webrtc_service.sanitize_and_munge_sdp(
+                answer_sdp=answer["sdp"],
+                client_host=req.client_host,
+                req_sdp=req.sdp,
+            )
 
         logger.info(f"[WEBRTC] SDP answer returned to browser for session '{session_id}'")
         return answer

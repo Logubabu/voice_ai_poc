@@ -1,0 +1,67 @@
+version: 0.2
+
+phases:
+  pre_build:
+    commands:
+      - echo Logging in to Amazon ECR...
+      - aws --version
+      - AWS_REGION="ap-southeast-2"
+      - ECR_REPOSITORY="voice-ai-poc"
+      - ECS_CLUSTER="voice_ai_fr_cluster"
+      - ECS_SERVICE="voice-ai-service-VAI"
+      - TASK_DEFINITION="voice-ai-task-definition"
+      - CONTAINER_NAME="voice-ai"
+      - aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $(aws sts get-caller-identity --query Account --output text).dkr.ecr.$AWS_REGION.amazonaws.com
+      - REPOSITORY_URI=$(aws sts get-caller-identity --query Account --output text).dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY
+      - COMMIT_HASH=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c 1-7)
+      - IMAGE_TAG=${COMMIT_HASH:-latest}
+  build:
+    commands:
+      - echo Build started on `date`
+      - echo Building the Docker image...
+      - docker build -t $REPOSITORY_URI:latest .
+      - docker tag $REPOSITORY_URI:latest $REPOSITORY_URI:$IMAGE_TAG
+  post_build:
+    commands:
+      - echo Build completed on `date`
+      - echo Pushing the Docker images to ECR...
+      - docker push $REPOSITORY_URI:latest
+      - docker push $REPOSITORY_URI:$IMAGE_TAG
+      - echo Downloading and patching task definition with SYS_NICE and SYS_RESOURCE capabilities...
+      - |
+        aws ecs describe-task-definition --task-definition $TASK_DEFINITION --query taskDefinition > task-definition.json
+        python3 -c '
+        import json
+        with open("task-definition.json") as f:
+            td = json.load(f)
+        for c in td.get("containerDefinitions", []):
+            if c.get("name") == "'$CONTAINER_NAME'":
+                c["image"] = "'$REPOSITORY_URI':'$IMAGE_TAG'"
+                lp = c.setdefault("linuxParameters", {})
+                caps = lp.setdefault("capabilities", {})
+                add_list = caps.setdefault("add", [])
+                for cap in ["SYS_NICE", "SYS_RESOURCE"]:
+                    if cap not in add_list:
+                        add_list.append(cap)
+        for k in ["taskDefinitionArn", "revision", "status", "requiresAttributes", "compatibilities", "registeredAt", "registeredBy"]:
+            td.pop(k, None)
+        with open("task-definition.json", "w") as f:
+            json.dump(td, f, indent=2)
+        '
+        NEW_TASK_DEF=$(aws ecs register-task-definition --cli-input-json file://task-definition.json --query taskDefinition.taskDefinitionArn --output text)
+        echo "Registered new task definition: $NEW_TASK_DEF"
+      - echo Forcing new deployment on ECS service...
+      - |
+        aws ecs update-service \
+          --cluster $ECS_CLUSTER \
+          --service $ECS_SERVICE \
+          --task-definition $NEW_TASK_DEF \
+          --force-new-deployment \
+          --region $AWS_REGION
+      - echo Writing imageDetail.json for CodePipeline artifacts...
+      - printf '{"ImageURI":"%s"}' $REPOSITORY_URI:$IMAGE_TAG > imageDetail.json
+
+artifacts:
+  files:
+    - imageDetail.json
+    - task-definition.json
