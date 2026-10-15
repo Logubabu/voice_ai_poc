@@ -132,11 +132,18 @@ jobs:
           image: ${{ steps.build-image.outputs.image }}
 
       - name: Validate task definition before ECS registration
+        env:
+          TASK_DEF_FILE: ${{ steps.task-def.outputs.task-definition }}
+          CONTAINER_NAME: ${{ env.CONTAINER_NAME }}
+          EXPECTED_IMAGE: ${{ steps.build-image.outputs.image }}
         run: |
           python -c '
-          import json, sys
+          import json, os, sys
 
-          task_def_file = "${{ steps.task-def.outputs.task-definition }}"
+          task_def_file = os.environ["TASK_DEF_FILE"]
+          container_name = os.environ["CONTAINER_NAME"]
+          expected_image = os.environ["EXPECTED_IMAGE"]
+
           print(f"Auditing rendered task definition: {task_def_file}")
 
           with open(task_def_file, "r") as f:
@@ -156,8 +163,9 @@ jobs:
           if "FARGATE" not in compat:
               errors.append(f"requiresCompatibilities must contain FARGATE, got: {compat}")
 
-          if td.get("networkMode") != "awsvpc":
-              errors.append(f"networkMode must be awsvpc for Fargate, got: {td.get(\"networkMode\")}")
+          actual_mode = td.get("networkMode")
+          if actual_mode != "awsvpc":
+              errors.append(f"networkMode must be awsvpc for Fargate, got: {actual_mode}")
 
           # Container audits
           containers = td.get("containerDefinitions", [])
@@ -167,7 +175,7 @@ jobs:
           target_c = None
           for c in containers:
               c_name = c.get("name")
-              if c_name == "${{ env.CONTAINER_NAME }}":
+              if c_name == container_name:
                   target_c = c
 
               if c.get("privileged") is True:
@@ -183,11 +191,11 @@ jobs:
                       errors.append(f"Container {c_name} has SYS_RESOURCE in linuxParameters.capabilities.add")
 
           if not target_c:
-              errors.append("Target container ${{ env.CONTAINER_NAME }} not found in containerDefinitions")
+              errors.append(f"Target container {container_name} not found in containerDefinitions")
           else:
-              expected_img = "${{ steps.build-image.outputs.image }}"
-              if target_c.get("image") != expected_img:
-                  errors.append(f"Image mismatch: expected {expected_img}, got {target_c.get(\"image\")}")
+              actual_img = target_c.get("image")
+              if actual_img != expected_image:
+                  errors.append(f"Image mismatch: expected {expected_image}, got {actual_img}")
 
               # Verify application port mappings for all 3 services:
               # - 8080: voice-ai-service-VAI
@@ -196,7 +204,7 @@ jobs:
               ports = [p.get("containerPort") for p in target_c.get("portMappings", [])]
               for required_port in [8080, 8000, 5173]:
                   if required_port not in ports:
-                      errors.append(f"Container ${{ env.CONTAINER_NAME }} missing required port {required_port} mapping (found: {ports})")
+                      errors.append(f"Container {container_name} missing required port {required_port} mapping (found: {ports})")
 
           if errors:
               print("=" * 70)
@@ -261,68 +269,11 @@ jobs:
               continue
             fi
 
-            # Check what task definition family the service currently uses
-            CURRENT_TD_ARN=$(aws ecs describe-services \
-              --cluster ${{ env.ECS_CLUSTER }} \
-              --services "$SVC" \
-              --region ${{ env.AWS_REGION }} \
-              --query "services[0].taskDefinition" \
-              --output text 2>/dev/null)
-            CURRENT_FAMILY=$(aws ecs describe-task-definition \
-              --task-definition "$CURRENT_TD_ARN" \
-              --region ${{ env.AWS_REGION }} \
-              --query "taskDefinition.family" \
-              --output text 2>/dev/null || echo "")
-
-            # If service uses voice-ai-task-definition, update directly with NEW_TASK_DEF_ARN
-            if [ -z "$CURRENT_FAMILY" ] || [ "$CURRENT_FAMILY" = "${{ env.TASK_DEFINITION }}" ]; then
-              TD_TO_APPLY="$NEW_TASK_DEF_ARN"
-            else
-              # Service has its own family; download, sanitize, update image, and register
-              echo "Service $SVC uses family '$CURRENT_FAMILY'. Creating sanitized revision..."
-              aws ecs describe-task-definition \
-                --task-definition "$CURRENT_TD_ARN" \
-                --region ${{ env.AWS_REGION }} \
-                --query taskDefinition > "svc-${SVC}.json"
-
-              python -c '
-              import json
-              with open("svc-'"$SVC"'.json") as f:
-                  td = json.load(f)
-              for k in ["taskDefinitionArn", "revision", "status", "requiresAttributes", "compatibilities", "registeredAt", "registeredBy"]:
-                  td.pop(k, None)
-              td["requiresCompatibilities"] = ["FARGATE"]
-              td["networkMode"] = "awsvpc"
-              for c in td.get("containerDefinitions", []):
-                  c["image"] = "${{ steps.build-image.outputs.image }}"
-                  if "privileged" in c:
-                      c["privileged"] = False
-                  lp = c.get("linuxParameters")
-                  if lp:
-                      caps = lp.get("capabilities", {})
-                      if "add" in caps:
-                          caps["add"] = [cap for cap in caps["add"] if cap not in ["SYS_NICE", "SYS_RESOURCE", "SYS_ADMIN", "NET_ADMIN", "ALL"]]
-                          if not caps["add"]:
-                              caps.pop("add", None)
-                      if not caps:
-                          lp.pop("capabilities", None)
-                      if not lp:
-                          c.pop("linuxParameters", None)
-              with open("svc-'"$SVC"'-clean.json", "w") as f:
-                  json.dump(td, f, indent=2)
-              '
-              TD_TO_APPLY=$(aws ecs register-task-definition \
-                --cli-input-json file://"svc-${SVC}-clean.json" \
-                --region ${{ env.AWS_REGION }} \
-                --query taskDefinition.taskDefinitionArn \
-                --output text)
-            fi
-
-            echo "Updating service $SVC with task definition: $TD_TO_APPLY..."
+            echo "Updating service $SVC with task definition: $NEW_TASK_DEF_ARN..."
             aws ecs update-service \
               --cluster ${{ env.ECS_CLUSTER }} \
               --service "$SVC" \
-              --task-definition "$TD_TO_APPLY" \
+              --task-definition "$NEW_TASK_DEF_ARN" \
               --force-new-deployment \
               --region ${{ env.AWS_REGION }}
 
@@ -360,5 +311,3 @@ jobs:
             --region ${{ env.AWS_REGION }} \
             --query "services[*].{Service:serviceName,Status:status,Desired:desiredCount,Running:runningCount,TaskDefinition:taskDefinition}" \
             --output table || true
-
-
