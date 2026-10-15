@@ -1,3 +1,5 @@
+import os
+import sys
 import uuid
 from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -50,15 +52,39 @@ app.include_router(callbacks_router)
 async def warm_up_services():
     """Pre-warms service adapters and logs provider configuration status."""
     setup_asyncio_exception_handler()
+    app_version = getattr(app, "version", "0.1.0")
+    python_ver = sys.version.split()[0]
+    git_sha = os.getenv("GIT_COMMIT_SHA", os.getenv("APP_COMMIT_SHA", "dev-local"))
+    env_name = os.getenv("ENVIRONMENT", os.getenv("APP_ENV", "production"))
+    listening_host = os.getenv("HOST", "0.0.0.0")
+    listening_port = os.getenv("PORT", "8000")
+
     logger.info("==================================================")
-    logger.info("VOICE AI BACKEND STARTUP")
+    logger.info("VOICE AI PRODUCTION BACKEND STARTUP")
+    logger.info(f"[DIAGNOSTICS] Application Version: {app_version}")
+    logger.info(f"[DIAGNOSTICS] Python Version:      {python_ver}")
+    logger.info(f"[DIAGNOSTICS] Git Commit SHA:      {git_sha}")
+    logger.info(f"[DIAGNOSTICS] Environment:         {env_name}")
+    logger.info(f"[DIAGNOSTICS] Listening Interface: {listening_host}:{listening_port}")
+    logger.info("--------------------------------------------------")
+
     sarvam_configured = bool(config.SARVAM_API_KEY or config.STT_API_KEY)
     gemini_configured = bool(config.GEMINI_API_KEY or config.LLM_API_KEY)
+    groq_configured = bool(config.GROQ_API_KEY)
     elevenlabs_configured = bool(config.ELEVENLABS_API_KEY or config.TTS_API_KEY)
+    twilio_configured = bool(config.TWILIO_ACCOUNT_SID and config.TWILIO_AUTH_TOKEN)
 
-    logger.info(f"[CONFIG] SARVAM_API_KEY: {'configured' if sarvam_configured else 'NOT CONFIGURED'}")
-    logger.info(f"[CONFIG] GEMINI_API_KEY: {'configured' if gemini_configured else 'NOT CONFIGURED'}")
-    logger.info(f"[CONFIG] ELEVENLABS_API_KEY: {'configured' if elevenlabs_configured else 'NOT CONFIGURED'}")
+    logger.info(f"[CONFIG] STT Provider:             {config.STT_PROVIDER}")
+    logger.info(f"[CONFIG] SARVAM_API_KEY:           {'configured' if sarvam_configured else 'NOT CONFIGURED'}")
+    logger.info(f"[CONFIG] LLM Provider:             {config.LLM_PROVIDER} ({config.LLM_MODEL})")
+    logger.info(f"[CONFIG] GEMINI_API_KEY:           {'configured' if gemini_configured else 'NOT CONFIGURED'}")
+    logger.info(f"[CONFIG] GROQ_API_KEY:             {'configured' if groq_configured else 'NOT CONFIGURED'}")
+    logger.info(f"[CONFIG] TTS Provider:             {config.TTS_PROVIDER}")
+    logger.info(f"[CONFIG] ELEVENLABS_API_KEY:       {'configured' if elevenlabs_configured else 'NOT CONFIGURED'}")
+    logger.info(f"[CONFIG] Twilio NTS (TURN Relay):  {'configured' if twilio_configured else 'NOT CONFIGURED (Required for AWS WebRTC audio)'}")
+    logger.info(f"[CONFIG] Vector DB:                {getattr(config, 'VECTOR_DB', 'qdrant')}")
+    logger.info(f"[CONFIG] Web Search Provider:      {getattr(config, 'WEB_SEARCH_PROVIDER', 'duckduckgo')}")
+    logger.info("--------------------------------------------------")
 
     try:
         from app.services.stt import create_stt_service

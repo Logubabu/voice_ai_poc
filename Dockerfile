@@ -31,6 +31,9 @@ ENV DEBIAN_FRONTEND=noninteractive \
     BAIDU_MRCP_ENABLE=0 \
     DISABLE_IPV6=true
 
+ARG GIT_COMMIT_SHA="dev-local"
+ENV GIT_COMMIT_SHA=${GIT_COMMIT_SHA}
+
 # Install system dependencies: Nginx, Supervisord, audio codecs, build essentials
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
