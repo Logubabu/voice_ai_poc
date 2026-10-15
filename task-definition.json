@@ -75,7 +75,7 @@
         { "name": "FREESWITCH_ENABLED", "value": "true" },
         { "name": "FREESWITCH_HOST", "value": "127.0.0.1:8021" },
         { "name": "WEB_SEARCH_PROVIDER", "value": "duckduckgo" },
-        { "name": "QDRANT_URL", "value": "http://localhost:6333" },
+        { "name": "QDRANT_URL", "value": "http://qdrant:6333" },
         { "name": "AUTO_DISCOVER_PUBLIC_IP", "value": "true" }
       ],
       "healthCheck": {
