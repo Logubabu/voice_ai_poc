@@ -28,8 +28,8 @@ class Config:
     """Application configuration from environment variables."""
 
     # Provider configurations
-    STT_PROVIDER: str = os.getenv("STT_PROVIDER", "sarvam").lower()
-    STT_API_KEY: str = os.getenv("STT_API_KEY", "") or os.getenv("SARVAM_API_KEY", "")
+    STT_PROVIDER: str = os.getenv("STT_PROVIDER", "groq").lower()
+    STT_API_KEY: str = os.getenv("STT_API_KEY", "") or os.getenv("GROQ_API_KEY", "") or os.getenv("SARVAM_API_KEY", "")
     SARVAM_API_KEY: str = os.getenv("SARVAM_API_KEY", "")
     SARVAM_MODEL: str = os.getenv("SARVAM_MODEL", "saaras:v3")
     SARVAM_TTS_MODEL: str = os.getenv("SARVAM_TTS_MODEL", "bulbul:v3")
