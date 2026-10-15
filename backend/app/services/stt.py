@@ -14,21 +14,26 @@ def create_stt_service(cfg: Config) -> Any:
     if provider == "sarvam":
         sarvam_key = cfg.SARVAM_API_KEY or cfg.STT_API_KEY
         if not sarvam_key:
-            logger.error("[STT][FATAL] Sarvam API key is not configured (SARVAM_API_KEY or STT_API_KEY missing).")
-            raise RuntimeError("Sarvam STT initialization failed: SARVAM_API_KEY is not configured.")
-        try:
-            from pipecat.services.sarvam.stt import SarvamSTTService
-            params = {}
-            if hasattr(SarvamSTTService, "Settings"):
-                params["settings"] = SarvamSTTService.Settings(model=cfg.SARVAM_MODEL)
+            if cfg.GROQ_API_KEY:
+                logger.warning("[STT] Sarvam API key missing; falling back to available Groq STT provider.")
+                provider = "groq"
             else:
-                params["model"] = cfg.SARVAM_MODEL
-            service = SarvamSTTService(api_key=sarvam_key, **params)
-            logger.info(f"[STT] Provider: sarvam | Model: {cfg.SARVAM_MODEL} | Initialized")
-            return service
-        except Exception as e:
-            logger.exception(f"[STT][FATAL] Sarvam STT initialization failed: {e}")
-            raise RuntimeError(f"Sarvam STT initialization failed: {e}") from e
+                logger.error("[STT][FATAL] Sarvam API key is not configured (SARVAM_API_KEY or STT_API_KEY missing).")
+                raise RuntimeError("Sarvam STT initialization failed: SARVAM_API_KEY is not configured.")
+        else:
+            try:
+                from pipecat.services.sarvam.stt import SarvamSTTService
+                params = {}
+                if hasattr(SarvamSTTService, "Settings"):
+                    params["settings"] = SarvamSTTService.Settings(model=cfg.SARVAM_MODEL)
+                else:
+                    params["model"] = cfg.SARVAM_MODEL
+                service = SarvamSTTService(api_key=sarvam_key, **params)
+                logger.info(f"[STT] Provider: sarvam | Model: {cfg.SARVAM_MODEL} | Initialized")
+                return service
+            except Exception as e:
+                logger.exception(f"[STT][FATAL] Sarvam STT initialization failed: {e}")
+                raise RuntimeError(f"Sarvam STT initialization failed: {e}") from e
 
     if provider == "deepgram":
         dg_key = cfg.STT_API_KEY or os.getenv("DEEPGRAM_API_KEY", "")

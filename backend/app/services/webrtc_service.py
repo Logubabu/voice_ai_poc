@@ -246,17 +246,21 @@ class WebRTCService:
         if is_local_client:
             target_ips.append("127.0.0.1")
 
-        # Public IP (AWS metadata / checkip / WEBRTC_HOST)
-        pub_ip = await self.get_public_ip()
-        if pub_ip and pub_ip not in target_ips:
-            target_ips.append(pub_ip)
+        # Explicit WEBRTC_HOST configuration takes highest precedence for public direct host candidate
+        if config.WEBRTC_HOST:
+            explicit_host_ip = resolve_to_ipv4(config.WEBRTC_HOST)
+            if explicit_host_ip and explicit_host_ip not in target_ips and not is_private_or_loopback(explicit_host_ip):
+                target_ips.append(explicit_host_ip)
+        elif getattr(config, "AUTO_DISCOVER_PUBLIC_IP", True):
+            # Only discover public IP if WEBRTC_HOST is not explicitly configured
+            pub_ip = await self.get_public_ip()
+            if pub_ip and pub_ip not in target_ips and not is_private_or_loopback(pub_ip):
+                target_ips.append(pub_ip)
 
-        # If client accessed via an explicit domain or external IP, resolve to IPv4
-        if client_host and not is_local_client:
-            resolved_client_host = resolve_to_ipv4(client_host)
-            if resolved_client_host and not is_private_or_loopback(resolved_client_host):
-                if resolved_client_host not in target_ips:
-                    target_ips.append(resolved_client_host)
+        # CRITICAL: DO NOT add client_host (the ALB or proxy domain) as a UDP host candidate!
+        # An Application Load Balancer (ALB) or reverse proxy only handles TCP HTTP/HTTPS signaling,
+        # and DROPS all UDP media packets. Adding the ALB IP as a host candidate causes browsers
+        # to send audio packets to the ALB instead of the container or TURN relay, breaking audio.
 
         # 2. Process SDP answer line by line
         lines = answer_sdp.splitlines()

@@ -389,18 +389,29 @@ async def webrtc_offer(req: OfferRequest):
                     break
                 await asyncio.sleep(0.05)
 
-            transport = create_webrtc_transport(connection=connection, cfg=config)
-            logger.info(f"[WEBRTC] Transport created for session '{session_id}'")
+            try:
+                transport = create_webrtc_transport(connection=connection, cfg=config)
+                logger.info(f"[WEBRTC] Transport created for session '{session_id}'")
 
-            # Attach and start the Pipecat pipeline to this actual WebRTC connection
-            await pipeline_manager.start_session(
-                session_id=session_id,
-                transport=transport,
-                connection=connection,
-                tenant_id=req.tenant_id or "default_tenant",
-                knowledge_base_id=req.knowledge_base_id,
-            )
-            logger.info(f"[WEBRTC] WebRTC session '{session_id}' connected successfully")
+                # Attach and start the Pipecat pipeline to this actual WebRTC connection
+                await pipeline_manager.start_session(
+                    session_id=session_id,
+                    transport=transport,
+                    connection=connection,
+                    tenant_id=req.tenant_id or "default_tenant",
+                    knowledge_base_id=req.knowledge_base_id,
+                )
+                logger.info(f"[WEBRTC] WebRTC session '{session_id}' connected successfully")
+            except Exception as e:
+                logger.exception(f"[WEBRTC][FATAL] Pipeline initialization failed for session '{session_id}': {e}")
+                if hasattr(connection, "send_app_message"):
+                    try:
+                        connection.send_app_message({
+                            "type": "error",
+                            "message": f"Voice AI initialization failed: {e}. Check API keys configuration.",
+                        })
+                    except Exception:
+                        pass
 
         # Dynamically refresh ICE servers (STUN/TURN) before processing WebRTC offer
         _, aiortc_servers = await webrtc_service.get_ice_servers()

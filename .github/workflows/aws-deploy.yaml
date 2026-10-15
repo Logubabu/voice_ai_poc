@@ -75,6 +75,16 @@ jobs:
 
       - name: Prepare and sanitize task definition for AWS Fargate
         id: prep-task-def
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          STT_API_KEY: ${{ secrets.STT_API_KEY }}
+          SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
+          ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
+          TTS_API_KEY: ${{ secrets.TTS_API_KEY }}
+          TWILIO_ACCOUNT_SID: ${{ secrets.TWILIO_ACCOUNT_SID }}
+          TWILIO_AUTH_TOKEN: ${{ secrets.TWILIO_AUTH_TOKEN }}
+          TWILIO_FROM_NUMBER: ${{ secrets.TWILIO_FROM_NUMBER }}
         run: |
           echo "Downloading current active task definition or using repository fallback..."
           if aws ecs describe-task-definition --task-definition ${{ env.TASK_DEFINITION }} --query taskDefinition > raw-task-def.json 2>/dev/null; then
@@ -86,6 +96,7 @@ jobs:
           fi
 
           python -c '
+          import os
           import json
 
           base_file = "'"$BASE_DEF"'"
@@ -131,6 +142,48 @@ jobs:
                   # If linuxParameters has no parameters left, remove it entirely
                   if not lp:
                       c.pop("linuxParameters", None)
+
+              # 4. Inject runtime environment configuration and secrets
+              env_list = c.setdefault("environment", [])
+              existing = {item.get("name"): item for item in env_list}
+
+              # Default working configurations
+              defaults = {
+                  "PYTHONUNBUFFERED": "1",
+                  "ENVIRONMENT": "production",
+                  "LOG_LEVEL": "INFO",
+                  "STT_PROVIDER": "groq",
+                  "LLM_PROVIDER": "google",
+                  "LLM_MODEL": "gemini-3.5-flash",
+                  "TTS_PROVIDER": "elevenlabs",
+                  "ELEVENLABS_VOICE_ID": "JBFqnCBsd6RMkjVDRZzb",
+                  "ELEVENLABS_MODEL": "eleven_flash_v2_5",
+                  "CORS_ALLOW_ALL": "true",
+                  "FREESWITCH_ENABLED": "true",
+                  "FREESWITCH_HOST": "127.0.0.1:8021",
+                  "WEB_SEARCH_PROVIDER": "duckduckgo",
+                  "QDRANT_URL": "http://qdrant:6333",
+                  "AUTO_DISCOVER_PUBLIC_IP": "true",
+              }
+              for k, v in defaults.items():
+                  if k in existing:
+                      existing[k]["value"] = v
+                  else:
+                      env_list.append({"name": k, "value": v})
+
+              # Inject secrets if available in GitHub workflow environment
+              secret_names = [
+                  "GEMINI_API_KEY", "GROQ_API_KEY", "STT_API_KEY", "SARVAM_API_KEY",
+                  "ELEVENLABS_API_KEY", "TTS_API_KEY", "TWILIO_ACCOUNT_SID",
+                  "TWILIO_AUTH_TOKEN", "TWILIO_FROM_NUMBER"
+              ]
+              for sec in secret_names:
+                  val = os.environ.get(sec, "").strip()
+                  if val:
+                      if sec in existing:
+                          existing[sec]["value"] = val
+                      else:
+                          env_list.append({"name": sec, "value": val})
 
           with open("clean-task-def.json", "w") as f:
               json.dump(td, f, indent=2)
