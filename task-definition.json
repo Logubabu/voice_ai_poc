@@ -2,11 +2,16 @@
   "family": "voice-ai-task-definition",
   "networkMode": "awsvpc",
   "requiresCompatibilities": [
-    "FARGATE",
-    "EC2"
+    "FARGATE"
   ],
   "cpu": "2048",
   "memory": "4096",
+  "runtimePlatform": {
+    "cpuArchitecture": "X86_64",
+    "operatingSystemFamily": "LINUX"
+  },
+  "executionRoleArn": "arn:aws:iam::291200967799:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::291200967799:role/ecsTaskExecutionRole",
   "containerDefinitions": [
     {
       "name": "voice-ai",
@@ -16,47 +21,46 @@
         {
           "containerPort": 8080,
           "hostPort": 8080,
-          "protocol": "tcp"
-        },
-        {
-          "containerPort": 5173,
-          "hostPort": 5173,
-          "protocol": "tcp"
+          "protocol": "tcp",
+          "name": "voice-ai-8080-tcp"
         },
         {
           "containerPort": 8000,
           "hostPort": 8000,
-          "protocol": "tcp"
+          "protocol": "tcp",
+          "name": "voice-ai-8000-tcp"
+        },
+        {
+          "containerPort": 5173,
+          "hostPort": 5173,
+          "protocol": "tcp",
+          "name": "voice-ai-5173-tcp"
         },
         {
           "containerPort": 5060,
           "hostPort": 5060,
-          "protocol": "udp"
+          "protocol": "udp",
+          "name": "voice-ai-5060-udp"
         },
         {
           "containerPort": 5060,
           "hostPort": 5060,
-          "protocol": "tcp"
+          "protocol": "tcp",
+          "name": "voice-ai-5060-tcp"
         },
         {
           "containerPort": 8021,
           "hostPort": 8021,
-          "protocol": "tcp"
+          "protocol": "tcp",
+          "name": "voice-ai-8021-tcp"
         },
         {
           "containerPort": 8086,
           "hostPort": 8086,
-          "protocol": "tcp"
+          "protocol": "tcp",
+          "name": "voice-ai-8086-tcp"
         }
       ],
-      "linuxParameters": {
-        "capabilities": {
-          "add": [
-            "SYS_NICE",
-            "SYS_RESOURCE"
-          ]
-        }
-      },
       "healthCheck": {
         "command": [
           "CMD-SHELL",
@@ -72,9 +76,11 @@
         "options": {
           "awslogs-group": "/ecs/voice-ai-task-definition",
           "awslogs-region": "ap-southeast-2",
-          "awslogs-stream-prefix": "ecs"
+          "awslogs-stream-prefix": "ecs",
+          "awslogs-create-group": "true"
         }
       }
     }
   ]
 }
+

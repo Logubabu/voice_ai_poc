@@ -27,7 +27,7 @@ phases:
       - echo Pushing the Docker images to ECR...
       - docker push $REPOSITORY_URI:latest
       - docker push $REPOSITORY_URI:$IMAGE_TAG
-      - echo Downloading and patching task definition with SYS_NICE and SYS_RESOURCE capabilities...
+      - echo Downloading and sanitizing task definition for AWS ECS Fargate...
       - |
         aws ecs describe-task-definition --task-definition $TASK_DEFINITION --query taskDefinition > task-definition.json
         python3 -c '
@@ -37,12 +37,22 @@ phases:
         for c in td.get("containerDefinitions", []):
             if c.get("name") == "'$CONTAINER_NAME'":
                 c["image"] = "'$REPOSITORY_URI':'$IMAGE_TAG'"
-                lp = c.setdefault("linuxParameters", {})
-                caps = lp.setdefault("capabilities", {})
-                add_list = caps.setdefault("add", [])
-                for cap in ["SYS_NICE", "SYS_RESOURCE"]:
-                    if cap not in add_list:
-                        add_list.append(cap)
+            # Prohibit privileged and purge SYS_NICE/SYS_RESOURCE for Fargate compatibility
+            if "privileged" in c:
+                c["privileged"] = False
+            lp = c.get("linuxParameters")
+            if lp:
+                caps = lp.get("capabilities")
+                if caps and "add" in caps:
+                    caps["add"] = [cap for cap in caps["add"] if cap not in ["SYS_NICE", "SYS_RESOURCE", "SYS_ADMIN", "NET_ADMIN", "ALL"]]
+                    if not caps["add"]:
+                        caps.pop("add", None)
+                if not caps:
+                    lp.pop("capabilities", None)
+                if not lp:
+                    c.pop("linuxParameters", None)
+        td["requiresCompatibilities"] = ["FARGATE"]
+        td["networkMode"] = "awsvpc"
         for k in ["taskDefinitionArn", "revision", "status", "requiresAttributes", "compatibilities", "registeredAt", "registeredBy"]:
             td.pop(k, None)
         with open("task-definition.json", "w") as f:
@@ -50,14 +60,17 @@ phases:
         '
         NEW_TASK_DEF=$(aws ecs register-task-definition --cli-input-json file://task-definition.json --query taskDefinition.taskDefinitionArn --output text)
         echo "Registered new task definition: $NEW_TASK_DEF"
-      - echo Forcing new deployment on ECS service...
+      - echo Forcing new deployment across all 3 ECS services...
       - |
-        aws ecs update-service \
-          --cluster $ECS_CLUSTER \
-          --service $ECS_SERVICE \
-          --task-definition $NEW_TASK_DEF \
-          --force-new-deployment \
-          --region $AWS_REGION
+        for SVC in voice-ai-service-VAI voice-ai-service-be voice-ai-fe-service; do
+          echo "Updating ECS service: $SVC..."
+          aws ecs update-service \
+            --cluster $ECS_CLUSTER \
+            --service $SVC \
+            --task-definition $NEW_TASK_DEF \
+            --force-new-deployment \
+            --region $AWS_REGION || echo "Warning: Could not update $SVC. Continuing..."
+        done
       - echo Writing imageDetail.json for CodePipeline artifacts...
       - printf '{"ImageURI":"%s"}' $REPOSITORY_URI:$IMAGE_TAG > imageDetail.json
 
